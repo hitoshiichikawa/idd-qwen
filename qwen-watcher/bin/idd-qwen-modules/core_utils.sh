@@ -1308,6 +1308,22 @@ _hook_invoke() {
   return $?
 }
 
+# ─── full_auto_enabled: 完全自動化 kill switch の述語 (#97 移植) ──────────
+#
+# 用途: 完全自動化（full-auto）系の外部副作用を安全に制御する。
+#   `FULL_AUTO_ENABLED` が `true` の場合のみ true を返す。
+#   二重 opt-in gate（例: `SLACK_NOTIFY_ENABLED` AND `full_auto_enabled`）で使用する。
+#   既定は false（安全側）。unset / 空 / typo（`True` / `on` / `1`）は全て false。
+#
+# 戻り値: 0 = FULL_AUTO_ENABLED=true / 1 = それ以外
+# ─────────────────────────────────────────────────────────────────────────────
+full_auto_enabled() {
+  case "${FULL_AUTO_ENABLED:-false}" in
+    true) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ─── モジュール初期化 ───────────────────────────────────────────────────────
 
 core_utils_init() {
