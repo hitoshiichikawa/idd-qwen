@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.idd-qwen.issue-watcher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/hitoshi/github/idd-qwen/qwen-watcher/bin/qwen-codex-issue-watcher.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>REPO</key>
+        <string>owner/your-repo</string>
+        <key>REPO_DIR</key>
+        <string>/Users/hitoshi/work/your-repo</string>
+        <key>QWEN_MODEL</key>
+        <string>gpt-5.5</string>
+        <key>QWEN_YOLO</key>
+        <string>true</string>
+        <key>QWEN_MAX_TURNS</key>
+        <string>100</string>
+        <key>QWEN_MAX_WALL_TIME</key>
+        <string>900</string>
+        <key>PARALLEL_SLOTS</key>
+        <string>3</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hitoshi/log/qwen-codex/watcher.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/hitoshi/log/qwen-codex/watcher-error.log</string>
+
+    <key>StartInterval</key>
+    <integer>120</integer>
+
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

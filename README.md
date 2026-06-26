@@ -121,6 +121,19 @@ gh label create codex-failed --repo owner/repo --color e74c3c --description "自
 */5 * * * * cd /path/to/repo && ~/bin/qwen-codex-issue-watcher.sh 2>&1 | tee -a /tmp/qwen-codex.log
 ```
 
+### macOS 向け LaunchAgents 設定
+
+```bash
+# LaunchAgents plist を配置
+cp qwen-watcher/launch/com.idd-qwen.issue-watcher.plist ~/Library/LaunchAgents/
+
+# launchctl に登録
+launchctl load ~/Library/LaunchAgents/com.idd-qwen.issue-watcher.plist
+
+# 状態確認
+launchctl list | grep qwen-codex
+```
+
 ---
 
 ## 使い方
