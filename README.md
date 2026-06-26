@@ -55,6 +55,7 @@ idd-qwen/
 │   │   ├── idd-qwen-issue-watcher.sh      # メイン watcher スクリプト
 │   │   └── idd-qwen-modules/              # モジュール群
 │   │       ├── core_utils.sh                # 共通ユーティリティ
+│   │       ├── env-loader.sh                # per-repo env ファイル ローダ
 │   │       ├── triage.sh                    # Triage プロセッサ
 │   │       ├── dispatch.sh                  # Dispatch プロセッサ
 │   │       ├── stage-a-verify.sh            # Stage A Verify

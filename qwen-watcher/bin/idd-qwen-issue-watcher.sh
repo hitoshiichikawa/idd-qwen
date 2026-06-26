@@ -38,6 +38,22 @@ REPO_DIR="${REPO_DIR:-$HOME/work/your-repo}"
 # REPO から repo-unique な slug を導出（lock / log / 一時ファイルの隔離に使う）
 REPO_SLUG="$(echo "$REPO" | tr '/' '-')"
 
+# ─── per-repo env ファイル ローダ（idd-codex env-loader.sh 移植）───
+# Config ブロックの `*_ENABLED` 等の `${VAR:-default}` 評価より **前** に env-loader.sh を
+# 単独 source して per-repo env ファイル（`WATCHER_ENV_FILE` 明示パス または
+# `$HOME/.idd-qwen/<REPO_SLUG>.env`）から `*_ENABLED` 等を供給する。crontab 行を
+# REPO / REPO_DIR / BASE_BRANCH の最小限に保ち、行長限界（~1024 文字）での `command too
+# long` を解消する。env ファイル経由の値は inline cron env より低優先（既設定 KEY は不上書）。
+# REQUIRED_MODULES の通常ローダ（Config 後）より前に動かす必要があるため、ここで単独 source。
+# モジュール不在時は何もしない（導入前と等価）。REPO_SLUG / REPO 定義後・HOME 利用可で動作。
+IDD_ENV_LOADER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/idd-qwen-modules/env-loader.sh"
+if [ -f "$IDD_ENV_LOADER_PATH" ]; then
+  # shellcheck source=/dev/null
+  . "$IDD_ENV_LOADER_PATH"
+  el_load
+fi
+unset IDD_ENV_LOADER_PATH
+
 # per-repo log / lock / 一時ファイル
 LOG_DIR="${LOG_DIR:-${HOME}/log/idd-qwen}"
 LOCK_FILE="${LOCK_FILE:-${HOME}/lock/idd-qwen-issue-watcher-${REPO_SLUG}.lock}"
@@ -58,7 +74,7 @@ DRY_RUN="${DRY_RUN:-false}"
 
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils")
+REQUIRED_MODULES=("core_utils" "env-loader")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
