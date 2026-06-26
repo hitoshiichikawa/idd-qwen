@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/hitoshi/github/idd-qwen/qwen-watcher/bin/qwen-codex-issue-watcher.sh</string>
+        <string>/Users/hitoshi/github/idd-qwen/qwen-watcher/bin/idd-qwen-issue-watcher.sh</string>
     </array>
 
     <key>EnvironmentVariables</key>
@@ -30,10 +30,10 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/hitoshi/log/qwen-codex/watcher.log</string>
+    <string>/Users/hitoshi/log/idd-qwen/watcher.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/hitoshi/log/qwen-codex/watcher-error.log</string>
+    <string>/Users/hitoshi/log/idd-qwen/watcher-error.log</string>
 
     <key>StartInterval</key>
     <integer>120</integer>

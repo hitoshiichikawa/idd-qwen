@@ -12,7 +12,7 @@ Issue 駆動の開発ワークフローを自動化します。
 
 `idd-qwen` は、Qwen Code を使用して GitHub Issue 駆動の開発を自動化するためのワークフローテンプレートです。
 
-Codex CLI 向けに設計された `idd-codex` のワークフローを、Qwen Code のネイティブ機能で再実装しています。
+元々 `idd-codex`（Codex CLI 向け）として設計されていたワークフローを、Qwen Code のネイティブ機能で再実装しています。
 
 ### 主な特徴
 
@@ -52,8 +52,8 @@ idd-qwen/
 │
 ├── qwen-watcher/                    # Qwen Code 用 Issue 監視 watcher
 │   ├── bin/
-│   │   ├── qwen-codex-issue-watcher.sh      # メイン watcher スクリプト
-│   │   └── qwen-codex-modules/              # モジュール群
+│   │   ├── idd-qwen-issue-watcher.sh      # メイン watcher スクリプト
+│   │   └── idd-qwen-modules/              # モジュール群
 │   │       ├── core_utils.sh                # 共通ユーティリティ
 │   │       ├── triage.sh                    # Triage プロセッサ
 │   │       ├── dispatch.sh                  # Dispatch プロセッサ
@@ -65,7 +65,7 @@ idd-qwen/
 │   │       ├── auto-rebase.sh               # 自動 Rebase
 │   │       └── codex-guard.sh               # Codex Guard Hook
 │   └── LaunchAgents/
-│       └── com.local.qwen-codex-issue-watcher.plist  # macOS launchd 設定
+│       └── com.local.idd-qwen.issue-watcher.plist  # macOS launchd 設定
 │
 ├── repo-template/                 # 他 repo に配置するテンプレート
 │   ├── AGENTS.md
@@ -118,7 +118,7 @@ gh label create codex-failed --repo owner/repo --color e74c3c --description "自
 
 # 4. cron または launchd で watcher を定期実行
 # 例: 5分ごとに実行
-*/5 * * * * cd /path/to/repo && ~/bin/qwen-codex-issue-watcher.sh 2>&1 | tee -a /tmp/qwen-codex.log
+*/5 * * * * cd /path/to/repo && ~/bin/idd-qwen-issue-watcher.sh 2>&1 | tee -a /tmp/idd-qwen.log
 ```
 
 ### macOS 向け LaunchAgents 設定
@@ -131,7 +131,7 @@ cp qwen-watcher/launch/com.idd-qwen.issue-watcher.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.idd-qwen.issue-watcher.plist
 
 # 状態確認
-launchctl list | grep qwen-codex
+launchctl list | grep idd-qwen
 ```
 
 ---
@@ -153,7 +153,7 @@ Check repo for codex-auto-dev issues and process them
 qwen "Check repo for codex-auto-dev issues and process them" -y --channel CI --max-tool-calls 100 --max-wall-time 900s
 
 # 定期実行（cron 等）
-qwen-watcher/bin/qwen-codex-issue-watcher.sh
+qwen-watcher/bin/idd-qwen-issue-watcher.sh
 ```
 
 ### qwen serve による HTTP API 利用
@@ -215,7 +215,7 @@ Triage（Qwen Code ヘッドレス実行）
 
 ## 移行ガイド
 
-`idd-codex` から `idd-qwen` への移行については、[MIGRATION-GUIDE.md](./MIGRATION-GUIDE.md) を参照してください。
+idd-qwen から idd-codex への移行については、[MIGRATION-GUIDE.md](./MIGRATION-GUIDE.md) を参照してください。
 
 ---
 

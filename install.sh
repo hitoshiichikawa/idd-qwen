@@ -14,7 +14,7 @@ set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-$HOME/bin}"
 LAUNCH_DIR="${LAUNCH_DIR:-$HOME/Library/LaunchAgents}"
-LOG_DIR="${LOG_DIR:-$HOME/log/qwen-codex}"
+LOG_DIR="${LOG_DIR:-$HOME/log/idd-qwen}"
 LOCK_DIR="${LOCK_DIR:-$HOME/lock}"
 
 # ─── 引数処理 ───────────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ log_section() { echo ""; echo "=== $* ==="; echo ""; }
 # ─── インストール ────────────────────────────────────────────────────────────
 
 install_files() {
-    local script_src="${BASH_SOURCE[0]%/install.sh}/qwen-watcher/bin/qwen-codex-issue-watcher.sh"
+    local script_src="${BASH_SOURCE[0]%/install.sh}/qwen-watcher/bin/idd-qwen-issue-watcher.sh"
     local plist_src="${BASH_SOURCE[0]%/install.sh}/qwen-watcher/launch/com.idd-qwen.issue-watcher.plist"
 
     if [[ ! -f "${script_src}" ]]; then
@@ -96,7 +96,7 @@ install_files() {
     fi
 
     # スクリプトインストール
-    local script_dst="${INSTALL_DIR}/qwen-codex-issue-watcher.sh"
+    local script_dst="${INSTALL_DIR}/idd-qwen-issue-watcher.sh"
     if [[ -f "${script_dst}" && "${FORCE}" == "false" ]]; then
         log_warn "既存ファイルを上書きしません: ${script_dst}"
         log_warn "--force を指定すると上書きされます"

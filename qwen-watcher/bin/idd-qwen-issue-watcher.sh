@@ -4,7 +4,7 @@
 # GitHub Issue をポーリングし、codex-auto-dev ラベルが付いた未処理 Issue を検出して
 # Qwen Code を起動して自動処理する。
 #
-# 配置先: ~/bin/qwen-codex-issue-watcher.sh
+# 配置先: ~/bin/idd-qwen-issue-watcher.sh
 # 依存  : qwen / gh / jq / flock / git
 #
 # セットアップ: このファイル冒頭の Config ブロックを編集し、
@@ -27,8 +27,8 @@ export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 #   LOCK_FILE / LOG_DIR は REPO から自動派生するため衝突しない。
 #
 #   cron 例:
-#     */2 * * * * REPO=owner/a REPO_DIR=$HOME/work/a $HOME/bin/qwen-codex-issue-watcher.sh
-#     */3 * * * * REPO=owner/b REPO_DIR=$HOME/work/b $HOME/bin/qwen-codex-issue-watcher.sh
+#     */2 * * * * REPO=owner/a REPO_DIR=$HOME/work/a $HOME/bin/idd-qwen-issue-watcher.sh
+#     */3 * * * * REPO=owner/b REPO_DIR=$HOME/work/b $HOME/bin/idd-qwen-issue-watcher.sh
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # env var で上書き可能（未設定なら下のデフォルトを使う）
@@ -39,8 +39,8 @@ REPO_DIR="${REPO_DIR:-$HOME/work/your-repo}"
 REPO_SLUG="$(echo "$REPO" | tr '/' '-')"
 
 # per-repo log / lock / 一時ファイル
-LOG_DIR="${LOG_DIR:-${HOME}/log/qwen-codex}"
-LOCK_FILE="${LOCK_FILE:-${HOME}/lock/qwen-codex-issue-watcher-${REPO_SLUG}.lock}"
+LOG_DIR="${LOG_DIR:-${HOME}/log/idd-qwen}"
+LOCK_FILE="${LOCK_FILE:-${HOME}/lock/idd-qwen-issue-watcher-${REPO_SLUG}.lock}"
 WORKTREE_BASE="${WORKTREE_BASE:-main}"
 WORKTREE_PREFIX="${WORKTREE_PREFIX:-qwen-worktree-}"
 
@@ -57,7 +57,7 @@ PARALLEL_SLOTS="${PARALLEL_SLOTS:-3}"
 DRY_RUN="${DRY_RUN:-false}"
 
 # モジュール読み込み
-MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/qwen-codex-modules" && pwd)"
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
 REQUIRED_MODULES=("core_utils")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
@@ -127,7 +127,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --help)
-            echo "Usage: qwen-codex-issue-watcher.sh [--dry-run] [--repo owner/repo] [--repo-dir /path/to/repo]"
+            echo "Usage: $0 [--dry-run] [--repo owner/repo] [--repo-dir /path/to/repo]"
             exit 0
             ;;
         *)
@@ -164,13 +164,13 @@ check_dependencies() {
 check_repo() {
     if [[ -z "${REPO}" ]]; then
         log_error "REPO 環境変数が設定されていません"
-        log_error "例: REPO=owner/repo qwen-codex-issue-watcher.sh"
+        log_error "例: REPO=owner/repo idd-qwen-issue-watcher.sh"
         exit 1
     fi
 
     if [[ -z "${REPO_DIR}" ]]; then
         log_error "REPO_DIR 環境変数が設定されていません"
-        log_error "例: REPO_DIR=/path/to/repo qwen-codex-issue-watcher.sh"
+        log_error "例: REPO_DIR=/path/to/repo idd-qwen-issue-watcher.sh"
         exit 1
     fi
 
