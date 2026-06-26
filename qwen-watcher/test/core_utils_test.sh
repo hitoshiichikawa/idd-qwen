@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # テスト対象のモジュールを source
-MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../qwen-watcher/bin/qwen-codex-modules" && pwd)"
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../qwen-watcher/bin/idd-qwen-modules" && pwd)"
 source "${MODULE_DIR}/core_utils.sh"
 
 # テストヘルパー

@@ -96,7 +96,7 @@ _qw_run_qwen_headless() {
     local yolo="${QWEN_YOLO:-true}"
     local max_turns="${QWEN_MAX_TURNS:-100}"
     local max_wall_time="${QWEN_MAX_WALL_TIME:-900}"
-    local output_dir="${LOG_DIR:-${HOME}/log/qwen-codex}"
+    local output_dir="${LOG_DIR:-${HOME}/log/idd-qwen}"
 
     if [[ -z "${output_file}" ]]; then
         output_file="${output_dir}/qwen-output-${issue_number}.json"
