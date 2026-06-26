@@ -1,7 +1,7 @@
 ---
 name: project-manager
 description: ブランチの push、PR の作成、Issue とのリンク、ラベル更新を行う Project Manager エージェント。design-review モード（設計 PR 作成ゲート）と implementation モード（実装 PR 作成）の 2 モードで動作する。
-tools: Bash, Read, Write
+tools: ["Bash", "Read", "Write"]
 model: gpt-5.4-mini
 ---
 

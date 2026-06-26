@@ -184,7 +184,7 @@ POSIX 互換の ERE で次のパターンに一致する行を 1 件として数
 11〜13 件で consolidate に失敗した場合、および 14 件以上の forced split の場合、
 Architect は `design.md` の **末尾**（既存セクション群の後）に `## Split Proposal` セクションを
 追加します。本セクションの構造とテンプレは
-[`.codex/agents/architect.md`](../agents/architect.md) の「Budget overflow が検出された場合の対応」
+[`.qwen/agents/architect.md`](../agents/architect.md) の「Budget overflow が検出された場合の対応」
 節を参照してください。
 
 #### 既存ガイドラインとの関係
