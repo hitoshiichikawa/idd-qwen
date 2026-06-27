@@ -87,6 +87,13 @@ case "$FAILED_RECOVERY_MAX_ATTEMPTS" in
 esac
 FAILED_RECOVERY_STATE_DIR="${FAILED_RECOVERY_STATE_DIR:-$HOME/.idd-qwen/failed-recovery}"
 
+# run-summary（Per-Run Evidence Summary）
+RUN_SUMMARY_ENABLED="${RUN_SUMMARY_ENABLED:-true}"
+case "$RUN_SUMMARY_ENABLED" in
+  true|false) ;;
+  *)    RUN_SUMMARY_ENABLED="true" ;;
+esac
+
 # needs-decisions 自動続行（二重 opt-in: FULL_AUTO_ENABLED AND NEEDS_DECISIONS_MODE）
 NEEDS_DECISIONS_MODE="${NEEDS_DECISIONS_MODE:-all-human}"
 case "$NEEDS_DECISIONS_MODE" in
@@ -109,7 +116,7 @@ DRY_RUN="${DRY_RUN:-false}"
 
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto")
+REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "run-summary")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
@@ -149,6 +156,9 @@ mkdir -p "${LOG_DIR}"
 mkdir -p "$(dirname "${LOCK_FILE}")"
 mkdir -p "${FAILED_RECOVERY_STATE_DIR}" 2>/dev/null || true
 
+# run-summary 初期化（サイクル冒頭で 1 回）
+rs_init
+
 # ─── シグナルハンドラ ────────────────────────────────────────────────────────
 
 cleanup() {
@@ -160,6 +170,7 @@ cleanup() {
 }
 
 trap cleanup EXIT INT TERM
+trap 'rs_emit || true' EXIT
 
 # ─── 引数処理 ────────────────────────────────────────────────────────────────
 
@@ -452,6 +463,9 @@ _dispatcher_run() {
     issue_count=$(echo "${issues_json}" | jq 'length')
     log_info "処理対象の Issue 数: ${issue_count}"
 
+    # run-summary: mode 設定（impl 系）
+    rs_set_mode "impl"
+
     # 失敗回復処理（二重 gate: FULL_AUTO_ENABLED AND FAILED_RECOVERY_ENABLED）
     if declare -f process_failed_recovery &>/dev/null; then
         process_failed_recovery || fr_warn "process_failed_recovery が想定外のエラーで終了（後続 Issue 処理は継続）"
@@ -466,9 +480,14 @@ _dispatcher_run() {
 
         log_section "Issue #${issue_number} を処理中: ${issue_title}"
 
+        # run-summary: issue 番号・stage 記録
+        rs_set_issue "${issue_number}"
+        rs_record_stage "A"
+
         # 既に claim されているか確認
         if echo "${issue_labels}" | grep -q "${LABEL_CLAIMED}"; then
             log_warn "Issue #${issue_number} は既に claim されています。スキップ"
+            rs_set_result "hold"
             continue
         fi
 
@@ -478,6 +497,7 @@ _dispatcher_run() {
         else
             if ! claim_issue "${issue_number}"; then
                 log_error "Issue #${issue_number} の claim に失敗。次へ"
+                rs_set_result "failed"
                 continue
             fi
         fi
@@ -500,6 +520,7 @@ _dispatcher_run() {
                 log_error "Triage に失敗。Issue #${issue_number} を ${LABEL_FAILED} に設定"
                 update_issue_labels "${issue_number}" "${LABEL_FAILED}"
                 release_issue "${issue_number}"
+                rs_set_result "failed"
                 continue
             fi
 
@@ -525,6 +546,10 @@ _dispatcher_run() {
             if declare -f nda_evaluate_auto_continue &>/dev/null; then
                 if nda_evaluate_auto_continue "${output_file}"; then
                     log_info "needs-decisions 自動続行: Issue #${issue_number} は自動続行済み（次サイクルで再 pickup 待ち）"
+<<<<<<< HEAD
+                    rs_set_result "hold"
+=======
+>>>>>>> origin/main
                     continue
                 else
                     log_info "needs-decisions 自動続行: skip（従来経路へ）"
@@ -549,11 +574,13 @@ _dispatcher_run() {
             log_info "設計 PR を作成し、人間レビュー待ちに設定"
             update_issue_labels "${issue_number}" "${LABEL_AWAITING_DESIGN}"
             release_issue "${issue_number}"
+            rs_set_result "hold"
             continue
         fi
 
         # Developer 直起動（design-less）
         log_info "Developer を起動（design-less）..."
+        rs_record_stage "A'"
 
         developer_prompt=$(build_developer_prompt "${issue_number}" "${issue_title}" "${issue_url}")
 
@@ -564,12 +591,14 @@ _dispatcher_run() {
                 log_error "Developer に失敗。Issue #${issue_number} を ${LABEL_FAILED} に設定"
                 update_issue_labels "${issue_number}" "${LABEL_FAILED}"
                 release_issue "${issue_number}"
+                rs_set_result "failed"
                 continue
             fi
         fi
 
         # Reviewer 起動
         log_info "Reviewer を起動..."
+        rs_record_stage "B"
 
         if [[ "${DRY_RUN}" == "true" ]]; then
             log_info "[DRY-RUN] Reviewer を実行"
@@ -580,6 +609,7 @@ _dispatcher_run() {
 
         # PjM: impl PR 作成
         log_info "PjM: impl PR 作成..."
+        rs_record_stage "C"
 
         # ラベル更新
         if [[ "${DRY_RUN}" == "true" ]]; then
@@ -589,8 +619,13 @@ _dispatcher_run() {
             release_issue "${issue_number}"
         fi
 
+        rs_set_result "ready"
+
         log_section "Issue #${issue_number} の処理が完了しました"
     done
+
+    # run-summary: degraded log スキャン
+    rs_scan_degraded_log "${LOG_DIR}/idd-qwen-issue-watcher.log"
 
     log_section "=== Dispatcher を終了 ==="
     log_info "全 Issue の処理が完了しました"
