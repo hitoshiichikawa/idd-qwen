@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/hitoshi/github/idd-codex/local-watcher/bin/idd-codex-modules/**)",
+      "Bash(git fetch *)",
+      "Bash(git checkout *)",
+      "Bash(shellcheck *)",
+      "Bash(git push *)"
+    ]
+  },
+  "$version": 4
+}

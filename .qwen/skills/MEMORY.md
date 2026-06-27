@@ -1,0 +1,7 @@
+- [モジュール移植（idd-codex → idd-qwen）](auto-skill-module-migration/SKILL.md) — 既存モジュールを別レポジトリへ移植する全体手順
+- [モジュール移植時の関数出自追跡](auto-skill-module-provenance/SKILL.md) — git history で移植元由来 / 移植先固有関数を分類
+- [core_utils.sh スコープ分離](auto-skill-core-utils-scope-separation/SKILL.md) — 汎用ユーティリティ vs ドメイン固有機能の分離
+- [スタブモジュール → full implementation 移植](auto-skill-stub-to-full/SKILL.md) — stub を full implementation に完成させる
+- [実装完了確認と PR 準備](auto-skill-impl-verification/SKILL.md) — 実装コミット確認から PR Review 待ちまで
+- [レポジトリ横断シンボル・ファイル名リネーム](auto-skill-repo-rename/SKILL.md) — 旧名 → 新名の一括書き換え
+- [env-loader.sh モジュール移植](auto-skill-env-loader-port/SKILL.md) — env-loader.sh を移植し Config ブロック前に source する

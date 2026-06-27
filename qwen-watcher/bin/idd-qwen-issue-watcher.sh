@@ -546,7 +546,10 @@ _dispatcher_run() {
             if declare -f nda_evaluate_auto_continue &>/dev/null; then
                 if nda_evaluate_auto_continue "${output_file}"; then
                     log_info "needs-decisions 自動続行: Issue #${issue_number} は自動続行済み（次サイクルで再 pickup 待ち）"
+<<<<<<< HEAD
                     rs_set_result "hold"
+=======
+>>>>>>> origin/main
                     continue
                 else
                     log_info "needs-decisions 自動続行: skip（従来経路へ）"
