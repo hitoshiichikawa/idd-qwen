@@ -69,6 +69,24 @@ QWEN_MAX_WALL_TIME="${QWEN_MAX_WALL_TIME:-900}"
 # 並列処理スロット数
 PARALLEL_SLOTS="${PARALLEL_SLOTS:-3}"
 
+# 失敗回復（二重 opt-in: FULL_AUTO_ENABLED AND FAILED_RECOVERY_ENABLED）
+FULL_AUTO_ENABLED="${FULL_AUTO_ENABLED:-false}"
+case "$FULL_AUTO_ENABLED" in
+  true|false) ;;
+  *)    FULL_AUTO_ENABLED="false" ;;
+esac
+FAILED_RECOVERY_ENABLED="${FAILED_RECOVERY_ENABLED:-false}"
+case "$FAILED_RECOVERY_ENABLED" in
+  true|false) ;;
+  *)    FAILED_RECOVERY_ENABLED="false" ;;
+esac
+FAILED_RECOVERY_MAX_ATTEMPTS="${FAILED_RECOVERY_MAX_ATTEMPTS:-4}"
+case "$FAILED_RECOVERY_MAX_ATTEMPTS" in
+  ''|*[!0-9]*) FAILED_RECOVERY_MAX_ATTEMPTS=4 ;;
+  *) [ "$FAILED_RECOVERY_MAX_ATTEMPTS" -le 0 ] && FAILED_RECOVERY_MAX_ATTEMPTS=4 ;;
+esac
+FAILED_RECOVERY_STATE_DIR="${FAILED_RECOVERY_STATE_DIR:-$HOME/.idd-qwen/failed-recovery}"
+
 # ドライランモード（デフォルト false）
 DRY_RUN="${DRY_RUN:-false}"
 
@@ -112,6 +130,7 @@ LABEL_HOTFIX="codex-hotfix"
 
 mkdir -p "${LOG_DIR}"
 mkdir -p "$(dirname "${LOCK_FILE}")"
+mkdir -p "${FAILED_RECOVERY_STATE_DIR}" 2>/dev/null || true
 
 # ─── シグナルハンドラ ────────────────────────────────────────────────────────
 
@@ -415,6 +434,11 @@ _dispatcher_run() {
     # Issue 数カウント
     issue_count=$(echo "${issues_json}" | jq 'length')
     log_info "処理対象の Issue 数: ${issue_count}"
+
+    # 失敗回復処理（二重 gate: FULL_AUTO_ENABLED AND FAILED_RECOVERY_ENABLED）
+    if declare -f process_failed_recovery &>/dev/null; then
+        process_failed_recovery || fr_warn "process_failed_recovery が想定外のエラーで終了（後続 Issue 処理は継続）"
+    fi
 
     # Issue ごとに処理
     echo "${issues_json}" | jq -c '.[]' | while read -r issue; do
