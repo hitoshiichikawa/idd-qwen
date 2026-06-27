@@ -116,7 +116,7 @@ DRY_RUN="${DRY_RUN:-false}"
 
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "run-summary")
+REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "run-summary")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
@@ -466,6 +466,11 @@ _dispatcher_run() {
     # run-summary: mode 設定（impl 系）
     rs_set_mode "impl"
 
+    # PR Reviewer（PR 自動レビュー。Issue 処理の前に実行）
+    if declare -f process_pr_reviewer &>/dev/null; then
+        process_pr_reviewer || pr_log "process_pr_reviewer が想定外のエラーで終了（後続 Issue 処理は継続）"
+    fi
+
     # 失敗回復処理（二重 gate: FULL_AUTO_ENABLED AND FAILED_RECOVERY_ENABLED）
     if declare -f process_failed_recovery &>/dev/null; then
         process_failed_recovery || fr_warn "process_failed_recovery が想定外のエラーで終了（後続 Issue 処理は継続）"
@@ -546,10 +551,7 @@ _dispatcher_run() {
             if declare -f nda_evaluate_auto_continue &>/dev/null; then
                 if nda_evaluate_auto_continue "${output_file}"; then
                     log_info "needs-decisions 自動続行: Issue #${issue_number} は自動続行済み（次サイクルで再 pickup 待ち）"
-<<<<<<< HEAD
                     rs_set_result "hold"
-=======
->>>>>>> origin/main
                     continue
                 else
                     log_info "needs-decisions 自動続行: skip（従来経路へ）"
