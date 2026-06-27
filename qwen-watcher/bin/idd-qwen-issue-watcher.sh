@@ -135,7 +135,7 @@ full_auto_enabled() {
 
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary" "context-map")
+REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary" "context-map" "scaffolding-health")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
