@@ -114,6 +114,15 @@ esac
 # ドライランモード（デフォルト false）
 DRY_RUN="${DRY_RUN:-false}"
 
+# Per-task context-map 試験機能（#34）
+# `CONTEXT_MAP_ENABLED=true` で per-task context-map.md 生成 + prompt 注入が有効になる。
+CONTEXT_MAP_ENABLED="${CONTEXT_MAP_ENABLED:-false}"
+# Context Indexer（LLM-powered read-only indexer）
+# `CONTEXT_INDEXER_ENABLED=true` で context-map 生成時に LLM Indexer を起動する。
+CONTEXT_INDEXER_ENABLED="${CONTEXT_INDEXER_ENABLED:-false}"
+# Indexer 最大 turn 数（既定 10）。Indexer の runaway を抑止する上限。
+CONTEXT_INDEXER_MAX_TURNS="${CONTEXT_INDEXER_MAX_TURNS:-10}"
+
 # ─── Full-auto Kill Switch (#97) ──────────────────────────────────────────────
 # full-auto 系 processor（auto-merge 等）の共通 gate。
 # `FULL_AUTO_ENABLED=true` 厳密一致でのみ全 full-auto が有効になる。
@@ -126,7 +135,7 @@ full_auto_enabled() {
 
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary")
+REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary" "context-map")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
@@ -407,6 +416,15 @@ build_developer_prompt() {
     local issue_url="$3"
     local spec_dir="${REPO_DIR}/docs/specs/${issue_number}-*"
 
+    # context-map: per-task 実行前に deterministic metadata を生成
+    local context_map_block=""
+    if declare -f qw_write_context_map &>/dev/null; then
+        qw_write_context_map "0" "developer" "" "" 2>/dev/null || true
+    fi
+    if declare -f qw_build_prompt_block &>/dev/null; then
+        context_map_block="$(qw_build_prompt_block 2>/dev/null || true)"
+    fi
+
     cat <<EOF
 GitHub Issue #${issue_number} を実装してください。
 
@@ -426,6 +444,7 @@ URL: ${issue_url}
 6. impl-notes.md に AC Coverage Matrix を作成
 
 ブランチ: codex/issue-${issue_number}-impl
+${context_map_block}
 EOF
 }
 

@@ -74,8 +74,10 @@ log_section() { echo ""; echo "=== $* ==="; echo ""; }
 # ─── インストール ────────────────────────────────────────────────────────────
 
 install_files() {
-    local script_src="${BASH_SOURCE[0]%/install.sh}/qwen-watcher/bin/idd-qwen-issue-watcher.sh"
-    local plist_src="${BASH_SOURCE[0]%/install.sh}/qwen-watcher/launch/com.idd-qwen.issue-watcher.plist"
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local script_src="${script_dir}/qwen-watcher/bin/idd-qwen-issue-watcher.sh"
+    local plist_src="${script_dir}/qwen-watcher/launch/com.idd-qwen.issue-watcher.plist"
 
     if [[ ! -f "${script_src}" ]]; then
         log_error "Watcher スクリプトが見つかりません: ${script_src}"
@@ -108,6 +110,21 @@ install_files() {
             chmod +x "${script_dst}"
             log_info "インストール完了: ${script_dst}"
         fi
+    fi
+
+    # modules ディレクトリインストール
+    local modules_src="${script_dir}/qwen-watcher/bin/idd-qwen-modules"
+    local modules_dst="${INSTALL_DIR}/idd-qwen-modules"
+    if [[ -d "${modules_src}" ]]; then
+        if [[ "${DRY_RUN}" == "true" ]]; then
+            log_info "[DRY-RUN] インストール: ${modules_src} → ${modules_dst}/"
+        else
+            cp -R "${modules_src}" "${modules_dst}"
+            log_info "インストール完了: ${modules_dst}/"
+        fi
+    else
+        log_error "Modules ディレクトリが見つかりません: ${modules_src}"
+        exit 1
     fi
 
     # LaunchAgents plist インストール
