@@ -87,12 +87,29 @@ case "$FAILED_RECOVERY_MAX_ATTEMPTS" in
 esac
 FAILED_RECOVERY_STATE_DIR="${FAILED_RECOVERY_STATE_DIR:-$HOME/.idd-qwen/failed-recovery}"
 
+# needs-decisions 自動続行（二重 opt-in: FULL_AUTO_ENABLED AND NEEDS_DECISIONS_MODE）
+NEEDS_DECISIONS_MODE="${NEEDS_DECISIONS_MODE:-all-human}"
+case "$NEEDS_DECISIONS_MODE" in
+  all-human|classified|all-auto) ;;
+  *) NEEDS_DECISIONS_MODE="all-human" ;;
+esac
+NEEDS_DECISIONS_AUTO_MAX="${NEEDS_DECISIONS_AUTO_MAX:-4}"
+case "$NEEDS_DECISIONS_AUTO_MAX" in
+  ''|*[!0-9]*) NEEDS_DECISIONS_AUTO_MAX=4 ;;
+  *) [ "$NEEDS_DECISIONS_AUTO_MAX" -le 0 ] && NEEDS_DECISIONS_AUTO_MAX=4 ;;
+esac
+NEEDS_DECISIONS_GIT_TIMEOUT="${NEEDS_DECISIONS_GIT_TIMEOUT:-30}"
+case "$NEEDS_DECISIONS_GIT_TIMEOUT" in
+  ''|*[!0-9]*) NEEDS_DECISIONS_GIT_TIMEOUT=30 ;;
+  *) [ "$NEEDS_DECISIONS_GIT_TIMEOUT" -le 0 ] && NEEDS_DECISIONS_GIT_TIMEOUT=30 ;;
+esac
+
 # ドライランモード（デフォルト false）
 DRY_RUN="${DRY_RUN:-false}"
 
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils" "env-loader")
+REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
@@ -499,6 +516,21 @@ _dispatcher_run() {
         fi
 
         log_info "Triage 結果: needs_architect=${needs_architect}, needs_decisions=${needs_decisions}"
+
+        # needs-decisions 自動続行（classification=safe かつ第一推奨ありの場合、
+        # PM の第一推奨で自動続行。成功時は本ループを skip し、
+        # 失敗時 / human-only / 未設定は従来経路へ流れる）
+        if [[ "${needs_decisions}" == "true" ]] && [[ "${DRY_RUN}" != "true" ]]; then
+            output_file="${LOG_DIR}/qwen-output-${issue_number}.json"
+            if declare -f nda_evaluate_auto_continue &>/dev/null; then
+                if nda_evaluate_auto_continue "${output_file}"; then
+                    log_info "needs-decisions 自動続行: Issue #${issue_number} は自動続行済み（次サイクルで再 pickup 待ち）"
+                    continue
+                else
+                    log_info "needs-decisions 自動続行: skip（従来経路へ）"
+                fi
+            fi
+        fi
 
         # Architect が必要か判定
         if [[ "${needs_architect}" == "true" ]]; then
