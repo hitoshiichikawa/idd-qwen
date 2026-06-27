@@ -126,7 +126,7 @@ full_auto_enabled() {
 
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "run-summary")
+REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
@@ -484,6 +484,11 @@ _dispatcher_run() {
     # 実装 PR auto-merge（#99）。gate OFF 時は no-op。
     if declare -f process_auto_merge &>/dev/null; then
         process_auto_merge || am_warn "process_auto_merge が想定外のエラーで終了（後続 Issue 処理は継続）"
+    fi
+
+    # 設計 PR auto-merge（#10）。gate OFF 時は no-op。
+    if declare -f process_auto_merge_design &>/dev/null; then
+        process_auto_merge_design || am_warn "process_auto_merge_design が想定外のエラーで終了（後続 Issue 処理は継続）"
     fi
 
     # 失敗回復処理（二重 gate: FULL_AUTO_ENABLED AND FAILED_RECOVERY_ENABLED）
