@@ -114,9 +114,19 @@ esac
 # ドライランモード（デフォルト false）
 DRY_RUN="${DRY_RUN:-false}"
 
+# ─── Full-auto Kill Switch (#97) ──────────────────────────────────────────────
+# full-auto 系 processor（auto-merge 等）の共通 gate。
+# `FULL_AUTO_ENABLED=true` 厳密一致でのみ全 full-auto が有効になる。
+full_auto_enabled() {
+  case "${FULL_AUTO_ENABLED:-false}" in
+    true) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "run-summary")
+REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "run-summary")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
@@ -466,6 +476,16 @@ _dispatcher_run() {
     # run-summary: mode 設定（impl 系）
     rs_set_mode "impl"
 
+    # PR Reviewer（PR 自動レビュー。Issue 処理の前に実行）
+    if declare -f process_pr_reviewer &>/dev/null; then
+        process_pr_reviewer || pr_log "process_pr_reviewer が想定外のエラーで終了（後続 Issue 処理は継続）"
+    fi
+
+    # 実装 PR auto-merge（#99）。gate OFF 時は no-op。
+    if declare -f process_auto_merge &>/dev/null; then
+        process_auto_merge || am_warn "process_auto_merge が想定外のエラーで終了（後続 Issue 処理は継続）"
+    fi
+
     # 失敗回復処理（二重 gate: FULL_AUTO_ENABLED AND FAILED_RECOVERY_ENABLED）
     if declare -f process_failed_recovery &>/dev/null; then
         process_failed_recovery || fr_warn "process_failed_recovery が想定外のエラーで終了（後続 Issue 処理は継続）"
@@ -546,10 +566,7 @@ _dispatcher_run() {
             if declare -f nda_evaluate_auto_continue &>/dev/null; then
                 if nda_evaluate_auto_continue "${output_file}"; then
                     log_info "needs-decisions 自動続行: Issue #${issue_number} は自動続行済み（次サイクルで再 pickup 待ち）"
-<<<<<<< HEAD
                     rs_set_result "hold"
-=======
->>>>>>> origin/main
                     continue
                 else
                     log_info "needs-decisions 自動続行: skip（従来経路へ）"
