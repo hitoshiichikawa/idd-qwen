@@ -1381,6 +1381,171 @@ sc_tasks_unchecked_count() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Tasks Count Gate (TC) — Task Count Validation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── tc_count_tasks ─────────────────────────────────────────────────────────
+#
+# `tasks.md` の **最上位 numeric ID 未チェックタスク** 件数を整数で stdout に返す。
+# 判定 regex 正本: `.qwen/rules/tasks-generation.md` の「Budget overflow check」節および
+# `.qwen/rules/design-review-gate.md` の Mechanical Checks 節と **完全一致**。
+#
+# 入力: 環境変数 REPO_DIR / SPEC_DIR_REL
+# 戻り値:
+#   0 = 取得成功（stdout = 件数）
+#   1 = I/O 失敗（読み取り権限なし等、stdout = 0）
+#   2 = ファイル不在（design-less impl 等価扱い、stdout = 0）
+# 副作用: なし（read-only）
+tc_count_tasks() {
+  local rel="$SPEC_DIR_REL/tasks.md"
+  local path="$REPO_DIR/$rel"
+  [ -f "$path" ] || { echo 0; return 2; }
+  [ -r "$path" ] || { echo 0; return 1; }
+  local count
+  count=$(grep -cE '^- \[ \]\*? [0-9]+\. ' "$path" 2>/dev/null) || count=0
+  echo "$count"
+  return 0
+}
+
+# ─── tc_validate ────────────────────────────────────────────────────────────
+#
+# 最上位タスク件数に対して **Budget overflow check** を実行し、閾値に応じた判定を返す。
+# 判定基準（`.qwen/rules/design-review-gate.md` 準拠）:
+#   ≤ 10 件: pass（追加アクションなし）
+#   11〜13 件: consolidate（タスク統合）を試行 → 失敗時 split proposal 起票
+#   ≥ 14 件: forced split（consolidate スキップ）
+#
+# 入力: $1 = 件数（tc_count_tasks の stdout）
+# 戻り値:
+#   0 = pass（≤ 10 件）
+#   1 = consolidate required（11〜13 件）
+#   2 = forced split required（≥ 14 件）
+#   3 = 引数不正
+# 副作用: なし（pure function）
+tc_validate() {
+  local count="${1:-0}"
+  # 引数が整数か検証
+  if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+    _qw_log_error "tc_validate: invalid count '$count'"
+    return 3
+  fi
+  if [[ "${count}" -le 10 ]]; then
+    return 0
+  elif [[ "${count}" -le 13 ]]; then
+    return 1
+  else
+    return 2
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Design Review (DR) — Label Check Utilities
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── dr_labels_contain ──────────────────────────────────────────────────────
+#
+# 指定 issue に特定のラベルが存在するかを判定する。
+# `codex-needs-decisions` ラベルの有無を判定するのに使う（Architect split proposal 起票用）。
+#
+# 入力: $1 = Issue 番号, $2 = 判定ラベル名
+# 戻り値: 0 = ラベル存在 / 1 = ラベル未存在 / 2 = gh 実行失敗
+# 副作用: なし（gh API 呼び出しのみ）
+dr_labels_contain() {
+  local issue_num="$1"
+  local label_name="$2"
+  local labels_json=""
+
+  labels_json=$(gh issue view "$issue_num" --json labels --jq '.labels[].name' 2>/dev/null) || {
+    _qw_log_error "dr_labels_contain: gh issue view failed for #$issue_num"
+    return 2
+  }
+
+  if [ -z "$labels_json" ]; then
+    return 1
+  fi
+
+  # labels_json は改行区切りのラベル名リスト。grep で完全一致を検索。
+  if echo "$labels_json" | grep -qx "$label_name" 2>/dev/null; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Spec Artifacts Guard — Artifact Existence Checks
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── _spec_check_requirements ──────────────────────────────────────────────
+#
+# requirements.md の存在を判定する。
+# 入力: $1 = REPO_DIR, $2 = SPEC_DIR_REL
+# 戻り値: 0 = 存在 / 1 = 不在
+_spec_check_requirements() {
+  local repo_dir="$1"
+  local spec_dir_rel="$2"
+  [ -f "$repo_dir/$spec_dir_rel/requirements.md" ]
+}
+
+# ─── _spec_check_design ────────────────────────────────────────────────────
+#
+# design.md の存在を判定する。
+# 入力: $1 = REPO_DIR, $2 = SPEC_DIR_REL
+# 戻り値: 0 = 存在 / 1 = 不在
+_spec_check_design() {
+  local repo_dir="$1"
+  local spec_dir_rel="$2"
+  [ -f "$repo_dir/$spec_dir_rel/design.md" ]
+}
+
+# ─── _spec_check_tasks ─────────────────────────────────────────────────────
+#
+# tasks.md の存在を判定する。
+# 入力: $1 = REPO_DIR, $2 = SPEC_DIR_REL
+# 戻り値: 0 = 存在 / 1 = 不在
+_spec_check_tasks() {
+  local repo_dir="$1"
+  local spec_dir_rel="$2"
+  [ -f "$repo_dir/$spec_dir_rel/tasks.md" ]
+}
+
+# ─── _spec_artifacts_exist ─────────────────────────────────────────────────
+#
+# 3 つの spec artifact（requirements.md, design.md, tasks.md）の存在を
+# 一括でチェックする。design.md は optional（design-less impl 対応）。
+#
+# 入力: $1 = REPO_DIR, $2 = SPEC_DIR_REL
+# 戻り値:
+#   0 = 全 artifact 存在（requirements.md + tasks.md 必須、design.md optional）
+#   1 = requirements.md 不在
+#   2 = tasks.md 不在
+#   3 = design.md 不在（design-less impl ではない場合に警告）
+# 副作用: 各 artifact 不在を stderr に warn 出力
+_spec_artifacts_exist() {
+  local repo_dir="$1"
+  local spec_dir_rel="$2"
+  local missing=0
+
+  if ! _spec_check_requirements "$repo_dir" "$spec_dir_rel"; then
+    _qw_log_warn "spec artifact missing: $spec_dir_rel/requirements.md"
+    missing=1
+  fi
+
+  if ! _spec_check_tasks "$repo_dir" "$spec_dir_rel"; then
+    _qw_log_warn "spec artifact missing: $spec_dir_rel/tasks.md"
+    missing=2
+  fi
+
+  # design.md は optional（design-less impl 対応）
+  if ! _spec_check_design "$repo_dir" "$spec_dir_rel"; then
+    _qw_log_warn "spec artifact missing (optional): $spec_dir_rel/design.md"
+    # optional なので missing 値は更新しない（design-less impl として許容）
+  fi
+
+  return "$missing"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Phase C: Slot Lock Manager
 # ═══════════════════════════════════════════════════════════════════════════════
 
