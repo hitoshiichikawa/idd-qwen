@@ -66,6 +66,157 @@ QWEN_YOLO="${QWEN_YOLO:-true}"
 QWEN_MAX_TURNS="${QWEN_MAX_TURNS:-100}"
 QWEN_MAX_WALL_TIME="${QWEN_MAX_WALL_TIME:-900}"
 
+# ─── Codex CLI 互換設定（Codex CLI パターンを qwen CLI で再現）─────────────
+# 以下の設定は idd-codex の codex 実行パターンを qwen CLI で再現するために使用。
+# 各変数の意味は idd-codex と同一。qwen CLI 固有の flag とマッピングして使用。
+
+# サンドボックスモード（sandbox）
+#   none: 制限なし（既定）
+#   readonly: 読み込み専用（ファイル作成・編集不可）
+#   write: 書き込み可（既定の安全モード）
+CODEX_SANDBOX="${CODEX_SANDBOX:-write}"
+
+# 承認ポリシー（approval policy）
+#   all: 全操作を承認要求（安全側）
+#   auto: 全操作を自動実行（YOLO 相当）
+CODEX_APPROVAL_POLICY="${CODEX_APPROVAL_POLICY:-auto}"
+
+# 既定タイムアウト（秒）。ステージ個別の timeout がなければこちらを使用。
+CODEX_DEFAULT_TIMEOUT_SEC="${CODEX_DEFAULT_TIMEOUT_SEC:-3600}"
+
+# Debugger web search flag guard
+#   true: Debugger agent が web search を使用可能
+#   false: web search を無効化（既定）
+CODEX_DEBUGGER_WEB_SEARCH="${CODEX_DEBUGGER_WEB_SEARCH:-false}"
+
+# ─── Stage 別 reasoning effort マッピング ──────────────────────────────────
+# 各ステージの推論強度を low / medium / high で指定。
+# 値は qwen CLI の reasoning-effort フラグに渡す。
+# 既定値: Architect / Reviewer = high, 他 = medium, Triage = low
+
+_qw_reasoning_effort_for_stage() {
+    local stage="$1"
+    case "${stage}" in
+        triage|pm|pjmdesign-review|pjm-impl-pr)
+            echo "low"
+            ;;
+        architect|developer|reviewer|debugger)
+            echo "high"
+            ;;
+        qa)
+            echo "high"
+            ;;
+        *)
+            echo "medium"
+            ;;
+    esac
+}
+
+# ─── Stage 別 agent role 定義 ──────────────────────────────────────────────
+# 各ステージで使用する agent role の名前を返す（複数可、スペース区切り）。
+_qw_agent_roles_for_stage() {
+    local stage="$1"
+    case "${stage}" in
+        triage)
+            echo "product-manager"
+            ;;
+        architect)
+            echo "architect"
+            ;;
+        developer)
+            echo "developer"
+            ;;
+        reviewer)
+            echo "reviewer"
+            ;;
+        pjmdesign-review|pjm-impl-pr)
+            echo "project-manager"
+            ;;
+        debugger)
+            echo "debugger"
+            ;;
+        qa)
+            echo "qa"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# ─── agent role preamble 生成 ─────────────────────────────────────────────
+# .qwen/agents/<role>.md から role 定義を読み、prompt 本文に注入する preamble 文字列を生成。
+# 戻り値: 標準出力に preamble 全文。ファイルが存在しない場合は空文字列。
+_qw_build_role_preamble() {
+    local stage="$1"
+    local roles
+    roles=$(_qw_agent_roles_for_stage "${stage}")
+
+    if [[ -z "${roles}" ]]; then
+        return 0
+    fi
+
+    local preamble=""
+    for role in ${roles}; do
+        local role_file="${REPO_DIR}/.qwen/agents/${role}.md"
+        if [[ -f "${role_file}" ]]; then
+            preamble="${preamble}--- Rule from: ${role_file} ---\n\n"
+            preamble="${preamble}$(cat "${role_file}")\n\n"
+        fi
+    done
+
+    if [[ -n "${preamble}" ]]; then
+        printf '%s' "${preamble}"
+    fi
+}
+
+# ─── 実効タイムアウト計算 ──────────────────────────────────────────────────
+# CODEX_DEFAULT_TIMEOUT_SEC を尊重し、ステージ固有の timeout があればそれを優先。
+_qw_effective_timeout_sec() {
+    local stage="$1"
+    local stage_timeout="${CODEX_DEFAULT_TIMEOUT_SEC}"
+
+    # ステージ固有の timeout override（必要に応じて拡張）
+    case "${stage}" in
+        triage)
+            stage_timeout=1800
+            ;;
+        architect)
+            stage_timeout=5400
+            ;;
+        developer)
+            stage_timeout=7200
+            ;;
+        reviewer)
+            stage_timeout=1800
+            ;;
+        debugger)
+            stage_timeout=2400
+            ;;
+        pjmdesign-review|pjm-impl-pr)
+            stage_timeout=1800
+            ;;
+    esac
+
+    # CODEX_DEFAULT_TIMEOUT_SEC で global override
+    if [[ "${CODEX_DEFAULT_TIMEOUT_SEC}" -gt 0 ]] 2>/dev/null; then
+        stage_timeout="${CODEX_DEFAULT_TIMEOUT_SEC}"
+    fi
+
+    echo "${stage_timeout}"
+}
+
+# ─── web search 必要判定 ──────────────────────────────────────────────────
+# Debugger agent のみ web search が必要。他は常に false。
+_qw_wants_web_search() {
+    local stage="$1"
+    if [[ "${stage}" == "debugger" ]] && [[ "${CODEX_DEBUGGER_WEB_SEARCH}" == "true" ]]; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
 # 並列処理スロット数
 PARALLEL_SLOTS="${PARALLEL_SLOTS:-3}"
 
@@ -432,6 +583,361 @@ run_qwen_headless() {
     return 0
 }
 
+# ─── Codex CLI 互換実行ラッパー ─────────────────────────────────────────────
+# codex_exec_prompt() - Codex CLI パターンを qwen CLI で再現する核心実行関数。
+#
+# 引数:
+#   $1 = stage 名（triage / architect / developer / reviewer / debugger / qa）
+#   $2 = issue_number
+#   $3 = prompt 本文（role preamble 済み）
+#   $4 = output_file（省略可。既定: ${LOG_DIR}/qwen-output-<issue>.json）
+# 戻り値: qwen CLI の exit code
+codex_exec_prompt() {
+    local stage="$1"
+    local issue_number="$2"
+    local prompt="$3"
+    local output_file="${4:-${LOG_DIR}/qwen-output-${issue_number}.json}"
+
+    local effort timeout_sec web_search
+
+    effort=$(_qw_reasoning_effort_for_stage "${stage}")
+    timeout_sec=$(_qw_effective_timeout_sec "${stage}")
+    web_search=$(_qw_wants_web_search "${stage}")
+
+    log_info "codex_exec_prompt: stage=${stage} issue=${issue_number} effort=${effort} timeout=${timeout_sec}s sandbox=${CODEX_SANDBOX} approval=${CODEX_APPROVAL_POLICY}"
+
+    # Agent role preamble 生成（.qwen/agents/*.md から注入）
+    local role_preamble
+    role_preamble=$(_qw_build_role_preamble "${stage}")
+
+    # prompt に preamble を前置（空でない場合）
+    if [[ -n "${role_preamble}" ]]; then
+        prompt="${role_preamble}\n\n---\n\n${prompt}"
+    fi
+
+    # qwen CLI 実行（Codex CLI パターンを再現）
+    # 引数マッピング:
+    #   codex --reasoning-effort <effort>  →  qwen --reasoning-effort <effort>
+    #   codex --sandbox <mode>             →  qwen --sandbox <mode>
+    #   codex --ask-for-approval <policy>  →  qwen --ask-for-approval <policy>
+    #   codex --ephemeral                  →  qwen --channel CI
+    #   codex --max-turns <n>              →  qwen --max-session-turns <n>
+    #   codex --timeout <sec>              →  qwen --max-wall-time <sec>s
+    #   codex --enable-web-search          →  qwen --enable-web-search（Debugger のみ）
+
+    local qwen_args=(
+        "${prompt}"
+        -y
+        --channel CI
+        --output-format json
+        --json-file "${output_file}"
+        --max-session-turns "${QWEN_MAX_TURNS}"
+        --max-wall-time "${timeout_sec}s"
+        --include-directories "${REPO_DIR}"
+    )
+
+    # reasoning-effort 追加
+    if [[ -n "${effort}" ]] && [[ "${effort}" != "medium" ]]; then
+        qwen_args+=(--reasoning-effort "${effort}")
+    fi
+
+    # sandbox 追加（既定: write）
+    if [[ -n "${CODEX_SANDBOX}" ]] && [[ "${CODEX_SANDBOX}" != "write" ]]; then
+        qwen_args+=(--sandbox "${CODEX_SANDBOX}")
+    fi
+
+    # approval policy 追加（既定: auto）
+    if [[ -n "${CODEX_APPROVAL_POLICY}" ]] && [[ "${CODEX_APPROVAL_POLICY}" != "auto" ]]; then
+        qwen_args+=(--ask-for-approval "${CODEX_APPROVAL_POLICY}")
+    fi
+
+    # web search 追加（Debugger のみ）
+    if [[ "${web_search}" == "true" ]]; then
+        qwen_args+=(--enable-web-search)
+    fi
+
+    log_debug "qwen args: ${qwen_args[*]:0:10}..."
+
+    "${qwen_args[@]}" 2>&1 | tee -a "${LOG_DIR}/qwen-${issue_number}.log"
+
+    local exit_code=$?
+
+    if [[ ${exit_code} -ne 0 ]]; then
+        log_error "Qwen Code 実行失敗 (exit code: ${exit_code}, stage=${stage}, issue=${issue_number})"
+        return ${exit_code}
+    fi
+
+    log_info "Qwen Code 完了: stage=${stage} issue=${issue_number}"
+    return 0
+}
+
+# ─── Stage 実行ラッパー（reset file + quota tracking）───────────────────────
+# qa_run_codex_stage() - codex_exec_prompt の stage 別ラッパー。
+# reset file 管理により、サイクル間での quota リセットを実現。
+#
+# 引数:
+#   $1 = stage 名
+#   $2 = issue_number
+#   $3 = prompt 本文
+# 戻り値: codex_exec_prompt の exit code
+qa_run_codex_stage() {
+    local stage="$1"
+    local issue_number="$2"
+    local prompt="$3"
+
+    local output_file="${LOG_DIR}/qwen-output-${issue_number}.json"
+
+    # reset file 管理（サイクル冒頭の quota リセット）
+    local reset_file="${LOG_DIR}/.codex-reset-${REPO_SLUG}"
+    if [[ -f "${reset_file}" ]]; then
+        rm -f "${reset_file}"
+        log_debug "codex reset file 削除: ${reset_file}"
+    fi
+
+    codex_exec_prompt "${stage}" "${issue_number}" "${prompt}" "${output_file}"
+    return $?
+}
+
+# ─── partial status 検出 ────────────────────────────────────────────────────
+# handle_partial_status() - impl-notes.md の STATUS 行を検出し、
+# partial_blocked / partial_overrun を検出したら codex-needs-decisions ラベルを付与。
+#
+# 引数:
+#   $1 = repo
+#   $2 = issue_number
+#   $3 = spec_dir（例: docs/specs/14-foo）
+# 戻り値: 0 (status 行なし / complete), 1 (partial / needs-decisions)
+handle_partial_status() {
+    local repo="$1"
+    local issue_number="$2"
+    local spec_dir="$3"
+
+    local impl_notes
+    impl_notes=$(find "${spec_dir}" -maxdepth 1 -name "impl-notes.md" -type f 2>/dev/null | head -1)
+
+    if [[ -z "${impl_notes}" ]] || [[ ! -f "${impl_notes}" ]]; then
+        return 0
+    fi
+
+    # STATUS 行を検出（行頭固定: ^STATUS: (.+)$）
+    local status_line
+    status_line=$(grep -E '^STATUS: ' "${impl_notes}" 2>/dev/null | head -1 || true)
+
+    if [[ -z "${status_line}" ]]; then
+        return 0
+    fi
+
+    local status_value
+    status_value=$(echo "${status_line}" | sed -E 's/^STATUS: (.+)$/\1/')
+
+    case "${status_value}" in
+        complete)
+            log_info "impl-notes.md: STATUS=complete（通常経路継続）"
+            return 0
+            ;;
+        partial_blocked|partial_overrun)
+            log_warn "impl-notes.md: STATUS=${status_value} 検出 → codex-needs-decisions エスカレーション"
+
+            # 詳細をログに記録
+            local partial_reason
+            partial_reason=$(grep -A 5 '## Partial Halt Reason' "${impl_notes}" 2>/dev/null | tail -5 || echo "未記載")
+            log_warn "  理由: ${partial_reason}"
+
+            # Pending tasks を記録
+            local pending_tasks
+            pending_tasks=$(grep -A 20 '## Pending Tasks' "${impl_notes}" 2>/dev/null | tail -15 || echo "未記載")
+            log_warn "  未完了タスク: ${pending_tasks}"
+
+            # codex-needs-decisions ラベルを付与
+            if [[ "${DRY_RUN}" != "true" ]]; then
+                gh issue edit --repo "${repo}" "${issue_number}" \
+                    --add-label "${LABEL_NEEDS_DECISIONS}" 2>/dev/null || {
+                    log_error "codex-needs-decisions ラベル付与失敗: Issue #${issue_number}"
+                    return 1
+                }
+                log_info "Issue #${issue_number} に codex-needs-decisions ラベルを付与"
+            else
+                log_info "[DRY-RUN] Issue #${issue_number} に codex-needs-decisions ラベルを付与"
+            fi
+
+            return 1
+            ;;
+        *)
+            log_warn "impl-notes.md: 不明な STATUS 値 '${status_value}'（無視）"
+            return 0
+            ;;
+    esac
+}
+
+# ─── 実装パイプライン ──────────────────────────────────────────────────────
+# run_impl_pipeline() - Triage → Architect/Developer → PjM → Reviewer → Debugger の
+# 全ステージを連鎖実行するパイプライン関数。
+#
+# 各 stage transition は `stage:<stage_name>` prefix でログ出力。
+# partial_blocked / partial_overrun 検出時は codex-needs-decisions エスカレーション。
+#
+# 引数:
+#   $1 = repo
+#   $2 = issue_number
+#   $3 = issue_title
+#   $4 = triage_output_file（省略可。Triage 結果ファイル）
+# 戻り値: 0 (成功), 1 (失敗 / needs-decisions)
+run_impl_pipeline() {
+    local repo="$1"
+    local issue_number="$2"
+    local issue_title="$3"
+    local triage_output_file="${4:-}"
+
+    local spec_dir="${REPO_DIR}/docs/specs/${issue_number}-*"
+
+    log_section "=== impl pipeline 開始: Issue #${issue_number} ==="
+
+    # ── Stage 1: Triage ──────────────────────────────────────────────────
+    log_info "stage:triage"
+
+    local issue_body
+    issue_body=$(gh issue view --repo "${repo}" "${issue_number}" --body 2>/dev/null || echo "")
+
+    local triage_prompt
+    triage_prompt=$(build_triage_prompt "${issue_number}" "${issue_title}" "${issue_body}" "${issue_number}")
+
+    if [[ -z "${triage_output_file}" ]]; then
+        triage_output_file="${LOG_DIR}/qwen-output-${issue_number}.json"
+    fi
+
+    if ! qa_run_codex_stage "triage" "${issue_number}" "${triage_prompt}"; then
+        log_error "Triage 失敗: Issue #${issue_number}"
+        _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+        return 1
+    fi
+
+    local needs_architect needs_decisions
+    needs_architect=$(jq -r '.needs_architect // false' "${triage_output_file}" 2>/dev/null || echo "false")
+    needs_decisions=$(jq -r '.needs_decisions // false' "${triage_output_file}" 2>/dev/null || echo "false")
+
+    log_info "Triage 結果: needs_architect=${needs_architect}, needs_decisions=${needs_decisions}"
+
+    # needs-decisions 自動続行
+    if [[ "${needs_decisions}" == "true" ]] && [[ "${DRY_RUN}" != "true" ]]; then
+        if declare -f nda_evaluate_auto_continue &>/dev/null; then
+            if nda_evaluate_auto_continue "${triage_output_file}"; then
+                log_info "needs-decisions 自動続行済み"
+                return 0
+            fi
+        fi
+    fi
+
+    # ── Stage 2: Architect または Developer ──────────────────────────────
+    if [[ "${needs_architect}" == "true" ]]; then
+        log_info "stage:architect"
+
+        # PM: requirements.md 作成
+        local pm_prompt
+        pm_prompt=$(dispatch_build_pm_prompt "${issue_number}" "${issue_title}")
+
+        if ! qa_run_codex_stage "pm" "${issue_number}" "${pm_prompt}"; then
+            log_error "PM 失敗: Issue #${issue_number}"
+            _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+            return 1
+        fi
+
+        # Architect: design.md + tasks.md 作成
+        local architect_prompt
+        architect_prompt=$(dispatch_build_architect_prompt "${issue_number}" "${issue_title}")
+
+        if ! qa_run_codex_stage "architect" "${issue_number}" "${architect_prompt}"; then
+            log_error "Architect 失敗: Issue #${issue_number}"
+            _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+            return 1
+        fi
+
+        # PjM: design-review PR 作成
+        log_info "stage:pjmdesign-review"
+        if [[ "${DRY_RUN}" != "true" ]]; then
+            local branch="codex/issue-${issue_number}-design"
+            if git rev-parse --verify "${branch}" &>/dev/null; then
+                git push -u origin "${branch}" 2>&1 | dispatcher_log || {
+                    log_error "design branch push 失敗: ${branch}"
+                    _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+                    return 1
+                }
+                local pr_title="spec(#${issue_number}): design review for Issue #${issue_number}"
+                local pr_body="## 概要\n\n設計レビュー専用 PR\n\n## 対応 Issue\n\nRefs #${issue_number}\n\n## 含まれる成果物\n\n- docs/specs/${issue_number}-*/requirements.md\n- docs/specs/${issue_number}-*/design.md\n- docs/specs/${issue_number}-*/tasks.md"
+                gh pr create --base "${BASE_BRANCH:-main}" --head "${branch}" --title "${pr_title}" --body "${pr_body}" 2>&1 | dispatcher_log || {
+                    log_error "design-review PR 作成失敗"
+                    _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+                    return 1
+                }
+                _qw_update_issue_labels "${repo}" "${issue_number}" "codex-awaiting-design-review"
+            else
+                log_warn "design branch 不存在: ${branch}"
+                _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+                return 1
+            fi
+        fi
+
+    else
+        log_info "stage:developer"
+
+        # Developer: 実装
+        local dev_prompt
+        dev_prompt=$(dispatch_build_developer_prompt "${issue_number}" "${issue_title}")
+
+        if ! qa_run_codex_stage "developer" "${issue_number}" "${dev_prompt}"; then
+            log_error "Developer 失敗: Issue #${issue_number}"
+            _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+            return 1
+        fi
+
+        # partial status 検出（Developer 実行後）
+        if handle_partial_status "${repo}" "${issue_number}" "${spec_dir}"; then
+            log_info "Developer 完了: Issue #${issue_number}"
+        else
+            log_info "partial status 検出 → codex-needs-decisions エスカレーション済み"
+            return 0
+        fi
+
+        # Reviewer: リビュー
+        log_info "stage:reviewer"
+        local reviewer_prompt
+        reviewer_prompt=$(dispatch_build_reviewer_prompt "${issue_number}" "${issue_title}")
+
+        if ! qa_run_codex_stage "reviewer" "${issue_number}" "${reviewer_prompt}"; then
+            log_error "Reviewer 失敗: Issue #${issue_number}"
+            _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+            return 1
+        fi
+
+        # PjM: impl PR 作成
+        log_info "stage:pjm-impl-pr"
+        if [[ "${DRY_RUN}" != "true" ]]; then
+            local branch="codex/issue-${issue_number}-impl"
+            if git rev-parse --verify "${branch}" &>/dev/null; then
+                git push -u origin "${branch}" 2>&1 | dispatcher_log || {
+                    log_error "impl branch push 失敗: ${branch}"
+                    _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+                    return 1
+                }
+                local pr_title="feat(#${issue_number}): implement Issue #${issue_number}"
+                local pr_body="## 概要\n\nIssue #${issue_number} の実装\n\n## 対応 Issue\n\nRefs #${issue_number}\n\n## 実装内容\n\n- 実装完了\n- テスト追加\n\n## テスト結果\n\n- 全テスト pass"
+                gh pr create --base "${BASE_BRANCH:-main}" --head "${branch}" --title "${pr_title}" --body "${pr_body}" 2>&1 | dispatcher_log || {
+                    log_error "impl PR 作成失敗"
+                    _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+                    return 1
+                }
+                _qw_update_issue_labels "${repo}" "${issue_number}" "codex-ready-for-review"
+            else
+                log_warn "impl branch 不存在: ${branch}"
+                _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
+                return 1
+            fi
+        fi
+    fi
+
+    log_section "=== impl pipeline 完了: Issue #${issue_number} ==="
+    return 0
+}
+
 # Triage プロンプトの生成
 build_triage_prompt() {
     local issue_number="$1"
@@ -662,24 +1168,25 @@ _dispatcher_run() {
             fi
         fi
 
-        # dispatch.sh: Triage 結果に基づき Issue を振り分け
-        dispatcher_log "Issue #${issue_number}: dispatch_run を実行"
+        # run_impl_pipeline: Triage → Architect/Developer → PjM → Reviewer → Debugger の
+        # 全ステージを連鎖実行する新しいパイプライン関数。
+        dispatcher_log "Issue #${issue_number}: run_impl_pipeline を実行"
         if [[ "${DRY_RUN}" == "true" ]]; then
-            dispatcher_log "[DRY-RUN] dispatch_run を実行: needs_architect=${needs_architect}"
+            dispatcher_log "[DRY-RUN] run_impl_pipeline を実行: needs_architect=${needs_architect}"
             if [[ "${needs_architect}" == "true" ]]; then
                 rs_set_result "hold"
             else
                 rs_set_result "ready"
             fi
         else
-            if ! dispatch_run "${issue_number}" "${issue_title}" "${output_file}"; then
-                dispatcher_error "dispatch_run 失敗: Issue #${issue_number}"
-                update_issue_labels "${issue_number}" "${LABEL_FAILED}"
+            if ! run_impl_pipeline "${REPO}" "${issue_number}" "${issue_title}" "${output_file}"; then
+                dispatcher_error "run_impl_pipeline 失敗: Issue #${issue_number}"
+                _qw_update_issue_labels "${REPO}" "${issue_number}" "codex-failed"
                 release_issue "${issue_number}"
                 rs_set_result "failed"
                 continue
             fi
-            # dispatch_run 内部でラベル更新・release 済み。rs_result は各パス内で設定済み
+            # run_impl_pipeline 内部でラベル更新・release 済み。rs_result は各パス内で設定済み
         fi
 
         dispatcher_log "=== Issue #${issue_number} の処理が完了 ==="
