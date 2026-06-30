@@ -46,7 +46,7 @@
   - _Boundary: dispatcher_*, _dispatcher_*
   - _Depends: 2, 3
 
-- [ ] 5. Codex CLI Integration + Implementation Pipeline
+- [x] 5. Codex CLI Integration + Implementation Pipeline
   - `codex_run()` / `codex_run_with_effort()` を追加
   - `CODEX_SANDBOX` / `CODEX_APPROVAL_POLICY` config を追加
   - stage 別 reasoning effort（low/medium/high）実装
