@@ -1858,6 +1858,27 @@ full_auto_enabled() {
   esac
 }
 
+# ─── Dispatcher Logger ──────────────────────────────────────────────────────
+#
+# Dispatcher / Slot Worker 共通の timestamp 形式（既存 log_info / log_error 等と同じ
+# `[$(date '+%F %T')] <prefix>: ...` 形式に揃え、識別 prefix `dispatcher:` で grep
+# 集計できるようにする（Req NFR 2.1）。
+#
+# dispatcher_log  : stdout（通常ログ）
+# dispatcher_warn : stderr（警告）
+# dispatcher_error: stderr（エラー）
+# ─────────────────────────────────────────────────────────────────────────────
+dispatcher_log() {
+  echo "[$(date '+%F %T')] dispatcher: $*"
+}
+dispatcher_warn() {
+  echo "[$(date '+%F %T')] dispatcher: WARN: $*" >&2
+}
+dispatcher_error() {
+  echo "[$(date '+%F %T')] dispatcher: ERROR: $*" >&2
+}
+
+
 # ─── モジュール初期化 ───────────────────────────────────────────────────────
 
 core_utils_init() {
