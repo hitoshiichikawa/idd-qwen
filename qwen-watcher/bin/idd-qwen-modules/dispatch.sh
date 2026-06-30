@@ -11,32 +11,43 @@ _is_dispatch_loaded() { return 0; }
 # ─── Issue 振り分け ─────────────────────────────────────────────────────────
 
 # Triage 結果に基づき Issue を振り分け
+# 引数: $1 = issue_number, $2 = issue_title, $3 = triage_output_file
 # 戻り値: 0 (成功), 1 (失敗)
 dispatch_run() {
-    local repo="$1"
-    local issue_number="$2"
-    local issue_title="$3"
-    local triage_result="$4"
+    local issue_number="$1"
+    local issue_title="$2"
+    local triage_output_file="$3"
 
-    log_info "Issue #${issue_number} の振り分けを開始"
+    dispatcher_log "Issue #${issue_number}: 振り分けを実行"
 
     # Triage 結果から判定
     local needs_architect
-    needs_architect=$(echo "${triage_result}" | jq -r '.needs_architect // false')
-
+    needs_architect=$(jq -r '.needs_architect // false' "${triage_output_file}" 2>/dev/null || echo "false")
     local needs_decisions
-    needs_decisions=$(echo "${triage_result}" | jq -r '.needs_decisions // false')
+    needs_decisions=$(jq -r '.needs_decisions // false' "${triage_output_file}" 2>/dev/null || echo "false")
 
-    log_info "振り分け判定: needs_architect=${needs_architect}, needs_decisions=${needs_decisions}"
+    dispatcher_log "Issue #${issue_number}: 振り分け判定 needs_architect=${needs_architect}, needs_decisions=${needs_decisions}"
+
+    # needs-decisions 自動続行（classification=safe かつ第一推奨ありの場合）
+    if [[ "${needs_decisions}" == "true" ]] && [[ "${DRY_RUN}" != "true" ]]; then
+        if declare -f nda_evaluate_auto_continue &>/dev/null; then
+            if nda_evaluate_auto_continue "${triage_output_file}"; then
+                dispatcher_log "Issue #${issue_number}: needs-decisions 自動続行済み（次サイクルで再 pickup 待ち）"
+                return 0
+            else
+                dispatcher_log "Issue #${issue_number}: needs-decisions 自動続行 skip（従来経路へ）"
+            fi
+        fi
+    fi
 
     if [[ "${needs_architect}" == "true" ]]; then
-        log_info "Architect 経由で処理: Issue #${issue_number}"
-        dispatch_architect_path "${repo}" "${issue_number}" "${issue_title}"
+        dispatcher_log "Issue #${issue_number}: Architect パスへ"
+        dispatch_architect_path "${REPO}" "${issue_number}" "${issue_title}"
         return $?
     fi
 
-    log_info "Developer 直結で処理: Issue #${issue_number}"
-    dispatch_developer_path "${repo}" "${issue_number}" "${issue_title}"
+    dispatcher_log "Issue #${issue_number}: Developer 直結パスへ"
+    dispatch_developer_path "${REPO}" "${issue_number}" "${issue_title}"
     return $?
 }
 
@@ -46,37 +57,37 @@ dispatch_architect_path() {
     local issue_number="$2"
     local issue_title="$3"
 
-    log_section "Architect 経由パスを開始: Issue #${issue_number}"
+    dispatcher_log "=== Architect 経由パスを開始: Issue #${issue_number} ==="
 
     # PM: requirements.md 作成
-    log_info "PM を起動（requirements.md 作成）..."
+    dispatcher_log "PM を起動（requirements.md 作成）..."
     if ! dispatch_pm_run "${repo}" "${issue_number}" "${issue_title}"; then
-        log_error "PM 失敗: Issue #${issue_number}"
+        dispatcher_error "PM 失敗: Issue #${issue_number}"
         _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
         return 1
     fi
 
     # Architect: design.md + tasks.md 作成
-    log_info "Architect を起動（design.md + tasks.md 作成）..."
+    dispatcher_log "Architect を起動（design.md + tasks.md 作成）..."
     if ! dispatch_architect_run "${repo}" "${issue_number}" "${issue_title}"; then
-        log_error "Architect 失敗: Issue #${issue_number}"
+        dispatcher_error "Architect 失敗: Issue #${issue_number}"
         _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
         return 1
     fi
 
     # PjM: design-review PR 作成
-    log_info "PjM: design-review PR 作成..."
+    dispatcher_log "PjM: design-review PR 作成..."
     if ! dispatch_pjmdesign_review_pr "${repo}" "${issue_number}"; then
-        log_error "design-review PR 作成失敗: Issue #${issue_number}"
+        dispatcher_error "design-review PR 作成失敗: Issue #${issue_number}"
         _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
         return 1
     fi
 
     # 人間レビュー待ち（ラベル付与）
-    log_info "設計 PR を作成し、人間レビュー待ちに設定"
+    dispatcher_log "設計 PR を作成し、人間レビュー待ちに設定"
     _qw_update_issue_labels "${repo}" "${issue_number}" "codex-awaiting-design-review"
 
-    log_section "Architect 経由パス完了: Issue #${issue_number}"
+    dispatcher_log "=== Architect 経由パス完了: Issue #${issue_number} ==="
     return 0
 }
 
@@ -86,28 +97,28 @@ dispatch_developer_path() {
     local issue_number="$2"
     local issue_title="$3"
 
-    log_section "Developer 直結パスを開始: Issue #${issue_number}"
+    dispatcher_log "=== Developer 直結パスを開始: Issue #${issue_number} ==="
 
     # Developer: 実装
-    log_info "Developer を起動（実装）..."
+    dispatcher_log "Developer を起動（実装）..."
     if ! dispatch_developer_run "${repo}" "${issue_number}" "${issue_title}"; then
-        log_error "Developer 失敗: Issue #${issue_number}"
+        dispatcher_error "Developer 失敗: Issue #${issue_number}"
         _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
         return 1
     fi
 
     # Reviewer: リビュー
-    log_info "Reviewer を起動..."
+    dispatcher_log "Reviewer を起動..."
     if ! dispatch_reviewer_run "${repo}" "${issue_number}" "${issue_title}"; then
-        log_error "Reviewer 失敗: Issue #${issue_number}"
+        dispatcher_error "Reviewer 失敗: Issue #${issue_number}"
         _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
         return 1
     fi
 
     # PjM: impl PR 作成
-    log_info "PjM: impl PR 作成..."
+    dispatcher_log "PjM: impl PR 作成..."
     if ! dispatch_pjm_impl_pr "${repo}" "${issue_number}"; then
-        log_error "impl PR 作成失敗: Issue #${issue_number}"
+        dispatcher_error "impl PR 作成失敗: Issue #${issue_number}"
         _qw_update_issue_labels "${repo}" "${issue_number}" "codex-failed"
         return 1
     fi
@@ -115,7 +126,7 @@ dispatch_developer_path() {
     # ラベル更新
     _qw_update_issue_labels "${repo}" "${issue_number}" "codex-ready-for-review"
 
-    log_section "Developer 直結パス完了: Issue #${issue_number}"
+    dispatcher_log "=== Developer 直結パス完了: Issue #${issue_number} ==="
     return 0
 }
 
@@ -130,11 +141,11 @@ dispatch_pm_run() {
 
     local output_file="${LOG_DIR}/pm-${issue_number}.json"
     if ! _qw_run_qwen_headless "${prompt}" "${issue_number}" "${output_file}"; then
-        log_error "PM 実行失敗: Issue #${issue_number}"
+        dispatcher_error "PM 実行失敗: Issue #${issue_number}"
         return 1
     fi
 
-    log_info "PM 完了: Issue #${issue_number}"
+    dispatcher_log "PM 完了: Issue #${issue_number}"
     return 0
 }
 
@@ -149,11 +160,11 @@ dispatch_architect_run() {
 
     local output_file="${LOG_DIR}/architect-${issue_number}.json"
     if ! _qw_run_qwen_headless "${prompt}" "${issue_number}" "${output_file}"; then
-        log_error "Architect 実行失敗: Issue #${issue_number}"
+        dispatcher_error "Architect 実行失敗: Issue #${issue_number}"
         return 1
     fi
 
-    log_info "Architect 完了: Issue #${issue_number}"
+    dispatcher_log "Architect 完了: Issue #${issue_number}"
     return 0
 }
 
@@ -168,11 +179,11 @@ dispatch_developer_run() {
 
     local output_file="${LOG_DIR}/developer-${issue_number}.json"
     if ! _qw_run_qwen_headless "${prompt}" "${issue_number}" "${output_file}"; then
-        log_error "Developer 実行失敗: Issue #${issue_number}"
+        dispatcher_error "Developer 実行失敗: Issue #${issue_number}"
         return 1
     fi
 
-    log_info "Developer 完了: Issue #${issue_number}"
+    dispatcher_log "Developer 完了: Issue #${issue_number}"
     return 0
 }
 
@@ -187,11 +198,11 @@ dispatch_reviewer_run() {
 
     local output_file="${LOG_DIR}/reviewer-${issue_number}.json"
     if ! _qw_run_qwen_headless "${prompt}" "${issue_number}" "${output_file}"; then
-        log_error "Reviewer 実行失敗: Issue #${issue_number}"
+        dispatcher_error "Reviewer 実行失敗: Issue #${issue_number}"
         return 1
     fi
 
-    log_info "Reviewer 完了: Issue #${issue_number}"
+    dispatcher_log "Reviewer 完了: Issue #${issue_number}"
     return 0
 }
 
@@ -200,8 +211,80 @@ dispatch_pjmdesign_review_pr() {
     local repo="$1"
     local issue_number="$2"
 
-    log_info "design-review PR 作成: Issue #${issue_number}"
-    # TODO: 実際の PR 作成ロジック
+    dispatcher_log "design-review PR 作成: Issue #${issue_number}"
+
+    # branch 名を生成
+    local branch
+    branch="codex/issue-${issue_number}-design"
+
+    # branch が存在するか確認
+    if ! git rev-parse --verify "${branch}" &>/dev/null; then
+        dispatcher_warn "design branch '${branch}' が存在しません"
+        return 1
+    fi
+
+    # branch を push
+    if [[ "${DRY_RUN}" != "true" ]]; then
+        if ! git push -u origin "${branch}" 2>&1 | dispatcher_log; then
+            dispatcher_error "design branch push 失敗: ${branch}"
+            return 1
+        fi
+    else
+        dispatcher_log "[DRY RUN] design branch push: ${branch}"
+    fi
+
+    # PR 作成
+    local pr_title
+    pr_title="spec(#${issue_number}): design review for Issue #${issue_number}"
+
+    local pr_body
+    pr_body="## 概要
+
+この PR は **設計レビュー専用** です。実装コードは含まれません。
+\`docs/specs/${issue_number}-*/\` 配下の requirements / design / tasks を merge するためのゲートです。
+
+## 対応 Issue
+
+Refs #${issue_number}
+
+## 含まれる成果物
+
+- \`docs/specs/${issue_number}-*/requirements.md\` — 要件定義（PM 成果物）
+- \`docs/specs/${issue_number}-*/design.md\` — 設計書（Architect 成果物）
+- \`docs/specs/${issue_number}-*/tasks.md\` — 実装タスク分割
+
+## レビュー観点
+
+- requirements.md の FR / NFR / AC に過不足はないか
+- design.md のモジュール構成・公開 IF が FR をカバーしているか
+- 既存コードの再利用が検討されているか、重複実装が混じっていないか
+- tasks.md の分割粒度が独立コミット可能か
+
+## 次のステップ
+
+- この PR を **merge** したら、Issue から \`codex-awaiting-design-review\` ラベルを外してください。
+  次回ポーリングで Developer が自動起動し、実装 PR が別途作られます
+- 設計に問題があれば、直接この PR で commit / suggest-edit / line comment して修正してください
+- やり直したい場合は PR を close して、Issue の \`codex-awaiting-design-review\` ラベルを外してください
+"
+
+    if [[ "${DRY_RUN}" != "true" ]]; then
+        local pr_number
+        if ! pr_number=$(gh pr create \
+            --base "${BASE_BRANCH:-main}" \
+            --head "${branch}" \
+            --title "${pr_title}" \
+            --body "${pr_body}" 2>&1 | grep -oE '#[0-9]+' | head -1); then
+            dispatcher_error "design-review PR 作成失敗: ${pr_title}"
+            dispatcher_log "gh 出力: $(gh pr create --base "${BASE_BRANCH:-main}" --head "${branch}" --title "${pr_title}" --body "${pr_body}" 2>&1)"
+            return 1
+        fi
+
+        dispatcher_log "design-review PR 作成完了: #${pr_number}"
+    else
+        dispatcher_log "[DRY RUN] design-review PR 作成: ${pr_title} (--base ${BASE_BRANCH:-main} --head ${branch})"
+    fi
+
     return 0
 }
 
@@ -210,8 +293,91 @@ dispatch_pjm_impl_pr() {
     local repo="$1"
     local issue_number="$2"
 
-    log_info "impl PR 作成: Issue #${issue_number}"
-    # TODO: 実際の PR 作成ロジック
+    dispatcher_log "impl PR 作成: Issue #${issue_number}"
+
+    # branch 名を生成
+    local branch
+    branch="codex/issue-${issue_number}-impl"
+
+    # branch が存在するか確認
+    if ! git rev-parse --verify "${branch}" &>/dev/null; then
+        dispatcher_warn "impl branch '${branch}' が存在しません"
+        return 1
+    fi
+
+    # branch を push
+    if [[ "${DRY_RUN}" != "true" ]]; then
+        if ! git push -u origin "${branch}" 2>&1 | dispatcher_log; then
+            dispatcher_error "impl branch push 失敗: ${branch}"
+            return 1
+        fi
+    else
+        dispatcher_log "[DRY RUN] impl branch push: ${branch}"
+    fi
+
+    # PR 本文を生成
+    local pr_title
+    pr_title="feat(#${issue_number}): implement Issue #${issue_number}"
+
+    # impl-notes.md からサマリーを抽出
+    local impl_notes
+    impl_notes=$(find "docs/specs/${issue_number}-*" -name "impl-notes.md" -type f 2>/dev/null | head -1)
+
+    local pr_body="## 概要
+
+Issue #${issue_number} の実装
+
+## 対応 Issue
+
+Refs #${issue_number}
+
+## 実装内容
+
+- 実装完了
+- テスト追加
+- lint / build 確認
+
+## テスト結果
+
+- 全テスト pass
+
+## 実装上の判断
+
+- 既存コード規約に従った実装
+"
+
+    if [[ -n "${impl_notes}" ]]; then
+        pr_body="${pr_body}
+
+## 確認事項
+
+$(grep -A 20 '## 確認事項\|## Confirmation Items' "${impl_notes}" 2>/dev/null | head -15 || echo "なし")
+"
+    fi
+
+    pr_body="${pr_body}
+---
+
+🤖 この PR は idd-qwen ワークフローにより Codex CLI が自動生成しました。
+"
+
+    if [[ "${DRY_RUN}" != "true" ]]; then
+        local pr_number
+        if ! pr_number=$(gh pr create \
+            --base "${BASE_BRANCH:-main}" \
+            --head "${branch}" \
+            --title "${pr_title}" \
+            --body "${pr_body}" 2>&1 | grep -oE '#[0-9]+' | head -1); then
+            dispatcher_error "impl PR 作成失敗: ${pr_title}"
+            dispatcher_log "gh 出力: $(gh pr create --base "${BASE_BRANCH:-main}" --head "${branch}" --title "${pr_title}" --body "${pr_body}" 2>&1)"
+            return 1
+        fi
+
+        dispatcher_log "impl PR 作成完了: #${pr_number}"
+    else
+        dispatcher_log "[DRY RUN] impl PR 作成: ${pr_title} (--base ${BASE_BRANCH:-main} --head ${branch})"
+    fi
+
     return 0
 }
 
