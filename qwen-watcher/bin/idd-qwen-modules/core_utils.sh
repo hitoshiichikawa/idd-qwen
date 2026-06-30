@@ -689,6 +689,203 @@ _qw_update_issue_labels() {
     return 0
 }
 
+# ─── 全 17 ラベル定数 ────────────────────────────────────────────────────────
+# repo-template/.github/scripts/idd-qwen-labels.sh と同一定義。
+# 各定数の値はラベル名そのもの（gh issue edit で直接使用）。
+# shellcheck disable=SC2034
+_QW_LABEL_AUTO_DEV="codex-auto-dev"
+_QW_LABEL_CLAIMED="codex-claimed"
+_QW_LABEL_PICKED_UP="codex-picked-up"
+_QW_LABEL_READY_FOR_REVIEW="codex-ready-for-review"
+_QW_LABEL_FAILED="codex-failed"
+_QW_LABEL_BLOCKED="codex-blocked"
+_QW_LABEL_AWAITING_SLOT="codex-awaiting-slot"
+_QW_LABEL_AWAITING_DESIGN_REVIEW="codex-awaiting-design-review"
+_QW_LABEL_NEEDS_DECISIONS="codex-needs-decisions"
+_QW_LABEL_NEEDS_REBASE="codex-needs-rebase"
+_QW_LABEL_NEEDS_ITERATION="codex-needs-iteration"
+_QW_LABEL_NEEDS_QUOTA_WAIT="codex-needs-quota-wait"
+_QW_LABEL_STAGED_FOR_RELEASE="codex-staged-for-release"
+_QW_LABEL_ST_FAILED="codex-st-failed"
+_QW_LABEL_SKIP_TRIAGE="codex-skip-triage"
+_QW_LABEL_HOTFIX="codex-hotfix"
+# 合計 17 件
+
+# ─── update_issue_labels: 公開 wrapper ──────────────────────────────────────
+# 既存 codex-* ラベルを全削除 → 指定ラベルを付与。
+# Args: $1=repo $2=issue_number $3+=labels
+# Returns: 0=success / 1=failure
+update_issue_labels() {
+    _qw_update_issue_labels "$@"
+}
+
+# ─── add_issue_label: 単一ラベル追加 ─────────────────────────────────────────
+# 既存ラベルを破壊的に上書きせず、指定ラベルのみを追加する。
+# Args: $1=repo $2=issue_number $3=label_name
+# Returns: 0=success / 1=failure
+add_issue_label() {
+    local repo="$1"
+    local issue_number="$2"
+    local label="$3"
+
+    gh issue edit --repo "${repo}" "${issue_number}" \
+        --add-label "${label}" 2>/dev/null || {
+        _qw_log_error "ラベルの付与に失敗: ${label} on #${issue_number}"
+        return 1
+    }
+    return 0
+}
+
+# ─── remove_issue_label: 単一ラベル削除 ──────────────────────────────────────
+# Args: $1=repo $2=issue_number $3=label_name
+# Returns: 0=success / 1=failure（ラベルが存在しなくてもエラーにならない）
+remove_issue_label() {
+    local repo="$1"
+    local issue_number="$2"
+    local label="$3"
+
+    gh issue edit --repo "${repo}" "${issue_number}" \
+        --remove-label "${label}" 2>/dev/null || true
+    return 0
+}
+
+# ─── mark_issue_failed: codex-failed へ遷移 ──────────────────────────────────
+# codex-picked-up / codex-claimed を削除し、codex-failed を付与。
+# Args: $1=repo $2=issue_number
+# Returns: 0=success / 1=failure
+mark_issue_failed() {
+    local repo="$1"
+    local issue_number="$2"
+
+    remove_issue_label "${repo}" "${issue_number}" "${_QW_LABEL_CLAIMED}"
+    remove_issue_label "${repo}" "${issue_number}" "${_QW_LABEL_PICKED_UP}"
+    add_issue_label "${repo}" "${issue_number}" "${_QW_LABEL_FAILED}"
+}
+
+# ─── mark_issue_needs_decisions: codex-needs-decisions へ遷移 ─────────────────
+# codex-picked-up / codex-claimed を削除し、codex-needs-decisions を付与。
+# Args: $1=repo $2=issue_number
+# Returns: 0=success / 1=failure
+mark_issue_needs_decisions() {
+    local repo="$1"
+    local issue_number="$2"
+
+    remove_issue_label "${repo}" "${issue_number}" "${_QW_LABEL_CLAIMED}"
+    remove_issue_label "${repo}" "${issue_number}" "${_QW_LABEL_PICKED_UP}"
+    add_issue_label "${repo}" "${issue_number}" "${_QW_LABEL_NEEDS_DECISIONS}"
+}
+
+# ─── handle_partial_status: partial 検出時のラベル操作 ───────────────────────
+# impl-notes.md の STATUS 行から partial_blocked / partial_overrun を検出し、
+# 対応するラベル操作を実行する。
+# Args: $1=repo $2=issue_number $3=impl_notes_path
+# Returns: 0=no partial / 1=partial_blocked / 2=partial_overrun / 3=error
+handle_partial_status() {
+    local repo="$1"
+    local issue_number="$2"
+    local impl_notes_path="$3"
+
+    if [[ ! -f "${impl_notes_path}" ]]; then
+        return 0
+    fi
+
+    local status
+    status="$(grep -E '^STATUS: ' "${impl_notes_path}" 2>/dev/null | tail -1)" || true
+
+    if [[ "${status}" == *"partial_blocked"* ]]; then
+        mark_issue_needs_decisions "${repo}" "${issue_number}"
+        return 1
+    elif [[ "${status}" == *"partial_overrun"* ]]; then
+        mark_issue_needs_decisions "${repo}" "${issue_number}"
+        return 2
+    fi
+
+    return 0
+}
+
+# ─── detect_blocked_marker: BLOCKED: 行の検出 ────────────────────────────────
+# impl-notes.md から行頭 BLOCKED: 行を検出する。
+# Args: $1=impl_notes_path
+# Stdout: BLOCKED: の後の reason 文字列（検出なしなら空）
+# Returns: 0=blocked / 1=not blocked
+detect_blocked_marker() {
+    local impl_notes_path="$1"
+
+    if [[ ! -f "${impl_notes_path}" ]]; then
+        return 1
+    fi
+
+    local line
+    line="$(grep -E '^BLOCKED: ' "${impl_notes_path}" 2>/dev/null | head -1)" || true
+
+    if [[ -n "${line}" ]]; then
+        echo "${line#BLOCKED: }"
+        return 0
+    fi
+
+    return 1
+}
+
+# ─── detect_needs_decision_marker: NEEDS_DECISION: 行の検出 ──────────────────
+# impl-notes.md から行頭 NEEDS_DECISION: 行を検出する。
+# Args: $1=impl_notes_path
+# Stdout: NEEDS_DECISION: の後の summary 文字列（検出なしなら空）
+# Returns: 0=needs_decision / 1=not needs_decision
+detect_needs_decision_marker() {
+    local impl_notes_path="$1"
+
+    if [[ ! -f "${impl_notes_path}" ]]; then
+        return 1
+    fi
+
+    local line
+    line="$(grep -E '^NEEDS_DECISION: ' "${impl_notes_path}" 2>/dev/null | head -1)" || true
+
+    if [[ -n "${line}" ]]; then
+        echo "${line#NEEDS_DECISION: }"
+        return 0
+    fi
+
+    return 1
+}
+
+# ─── detect_partial_status: STATUS 行の検出 ──────────────────────────────────
+# impl-notes.md から行頭 STATUS: 行を検出し、値を返す。
+# Args: $1=impl_notes_path
+# Stdout: complete / partial_blocked / partial_overrun / （未検出なら空）
+# Returns: 0=status detected / 1=not found
+detect_partial_status() {
+    local impl_notes_path="$1"
+
+    if [[ ! -f "${impl_notes_path}" ]]; then
+        return 1
+    fi
+
+    local line
+    line="$(grep -E '^STATUS: ' "${impl_notes_path}" 2>/dev/null | tail -1)" || true
+
+    if [[ -n "${line}" ]]; then
+        echo "${line#STATUS: }"
+        return 0
+    fi
+
+    return 1
+}
+
+# ─── detect_debugger_already_invoked: debugger-notes.md 存在検出 ─────────────
+# spec dir 内に debugger-notes.md が存在するか検出する。
+# Args: $1=spec_dir_rel
+# Returns: 0=already invoked / 1=not invoked
+detect_debugger_already_invoked() {
+    local spec_dir_rel="$1"
+
+    if [[ -f "${spec_dir_rel}/debugger-notes.md" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 以下は idd-codex 版 full implementation の移植（Processor 専用ロガー等）
 # ═══════════════════════════════════════════════════════════════════════════════
