@@ -283,9 +283,46 @@ check_repo() {
 
 # ─── Issue 監視機能 ──────────────────────────────────────────────────────────
 
+# ─── gh コマンド再試行（exponential backoff） ────────────────────────────────
+#
+# gh CLI コマンドを exponential backoff で再試行する。
+# 5xx / 429 / レート制限 / timeout を検出して再試行する。
+# 既定: 最大 5 回、初期 2 秒 → 4 → 8 → 16 → 32 秒（合計最大約 62 秒）
+#
+# 引数:
+#   $1 = retry 最大回数（既定 5）
+#   $2 = 初期待機秒数（既定 2）
+#   $3+ = 実行する gh コマンド（$@ にそのまま渡す）
+# 戻り値: 最終試行の exit status
+_gh_retry() {
+    local max_retries="${1:-5}"
+    local base_delay="${2:-2}"
+    shift 2
+    local cmd=("$@")
+    local attempt=0
+    local delay="$base_delay"
+
+    while true; do
+        attempt=$((attempt + 1))
+        if "${cmd[@]}" 2>/dev/null; then
+            return 0
+        fi
+
+        if [ "$attempt" -ge "$max_retries" ]; then
+            dispatcher_warn "gh コマンド最終試行失敗 (${cmd[*]}): ${attempt}/${max_retries}"
+            return 1
+        fi
+
+        dispatcher_warn "gh コマンド失敗 (${cmd[*]})、${delay}秒後に再試行 ${attempt}/${max_retries}"
+        sleep "$delay"
+        delay=$((delay * 2))
+    done
+}
+
 # codex-auto-dev ラベルの Issue を一覧取得
 list_auto_dev_issues() {
-    gh issue list --repo "${REPO}" \
+    _gh_retry 5 2 \
+        gh issue list --repo "${REPO}" \
         --label "${LABEL_AUTO_DEV}" \
         --state open \
         --json number,title,url,labels,author \
@@ -295,19 +332,21 @@ list_auto_dev_issues() {
 # Issue を claim したことを報告（ラベル付与）
 claim_issue() {
     local issue_number="$1"
-    gh issue edit --repo "${REPO}" "${issue_number}" \
-        --add-label "${LABEL_CLAIMED}" 2>/dev/null || {
+    if _gh_retry 5 2 gh issue edit --repo "${REPO}" "${issue_number}" \
+            --add-label "${LABEL_CLAIMED}"; then
+        log_info "Issue #${issue_number} を claim しました"
+        return 0
+    else
         log_error "Issue #${issue_number} の claim に失敗しました"
         return 1
-    }
-    log_info "Issue #${issue_number} を claim しました"
+    fi
 }
 
 # Issue の claim を解除（ラベル削除）
 release_issue() {
     local issue_number="$1"
-    gh issue edit --repo "${REPO}" "${issue_number}" \
-        --remove-label "${LABEL_CLAIMED}" 2>/dev/null || {
+    _gh_retry 3 2 gh issue edit --repo "${REPO}" "${issue_number}" \
+        --remove-label "${LABEL_CLAIMED}" || {
         log_warn "Issue #${issue_number} の release に失敗しました"
     }
 }
@@ -496,20 +535,20 @@ EOF
 # ─── Dispatcher（メインループ） ──────────────────────────────────────────────
 
 _dispatcher_run() {
-    log_section "=== Dispatcher を開始 ==="
+    dispatcher_log "=== Dispatcher を開始 ==="
 
     # Issue 一覧の取得
-    log_info "codex-auto-dev ラベルの Issue を一覧取得中..."
+    dispatcher_log "codex-auto-dev ラベルの Issue を一覧取得中..."
     issues_json=$(list_auto_dev_issues)
 
     if [[ -z "${issues_json}" ]]; then
-        log_info "処理対象の Issue なし"
+        dispatcher_log "処理対象の Issue なし"
         return 0
     fi
 
     # Issue 数カウント
     issue_count=$(echo "${issues_json}" | jq 'length')
-    log_info "処理対象の Issue 数: ${issue_count}"
+    dispatcher_log "処理対象の Issue 数: ${issue_count}"
 
     # run-summary: mode 設定（impl 系）
     rs_set_mode "impl"
@@ -546,7 +585,7 @@ _dispatcher_run() {
         issue_url=$(echo "${issue}" | jq -r '.url')
         issue_labels=$(echo "${issue}" | jq -r '.labels[]' 2>/dev/null || echo "")
 
-        log_section "Issue #${issue_number} を処理中: ${issue_title}"
+        dispatcher_log "=== Issue #${issue_number}: ${issue_title} ==="
 
         # run-summary: issue 番号・stage 記録
         rs_set_issue "${issue_number}"
@@ -554,38 +593,39 @@ _dispatcher_run() {
 
         # 既に claim されているか確認
         if echo "${issue_labels}" | grep -q "${LABEL_CLAIMED}"; then
-            log_warn "Issue #${issue_number} は既に claim されています。スキップ"
+            dispatcher_warn "Issue #${issue_number} は既に claim されています。スキップ"
             rs_set_result "hold"
             continue
         fi
 
         # Issue を claim
         if [[ "${DRY_RUN}" == "true" ]]; then
-            log_info "[DRY-RUN] Issue #${issue_number} を claim"
+            dispatcher_log "[DRY-RUN] Issue #${issue_number} を claim"
         else
             if ! claim_issue "${issue_number}"; then
-                log_error "Issue #${issue_number} の claim に失敗。次へ"
+                dispatcher_error "Issue #${issue_number} の claim に失敗。次へ"
                 rs_set_result "failed"
                 continue
             fi
+            dispatcher_log "Issue #${issue_number} を claim しました"
         fi
 
         # Issue 本文を取得
         issue_body=$(gh issue view --repo "${REPO}" "${issue_number}" --body 2>/dev/null || echo "")
 
         # Triage
-        log_info "Triage を実行中..."
+        dispatcher_log "Issue #${issue_number}: Triage を実行"
         triage_prompt=$(build_triage_prompt "${issue_number}" "${issue_title}" "${issue_body}" "${issue_url}")
 
         if [[ "${DRY_RUN}" == "true" ]]; then
-            log_info "[DRY-RUN] Qwen Code を実行: Triage"
+            dispatcher_log "[DRY-RUN] Qwen Code を実行: Triage"
             # 仮の判定
             needs_architect=false
             needs_decisions=false
         else
             # Qwen Code で Triage 実行
             if ! run_qwen_headless "${triage_prompt}" "${issue_number}"; then
-                log_error "Triage に失敗。Issue #${issue_number} を ${LABEL_FAILED} に設定"
+                dispatcher_error "Triage に失敗。Issue #${issue_number} を ${LABEL_FAILED} に設定"
                 update_issue_labels "${issue_number}" "${LABEL_FAILED}"
                 release_issue "${issue_number}"
                 rs_set_result "failed"
@@ -598,13 +638,13 @@ _dispatcher_run() {
                 needs_architect=$(jq -r '.needs_architect // false' "${output_file}" 2>/dev/null || echo "false")
                 needs_decisions=$(jq -r '.needs_decisions // false' "${output_file}" 2>/dev/null || echo "false")
             else
-                log_warn "Qwen Code の出力ファイルが不存在。デフォルトで続行"
+                dispatcher_warn "Qwen Code の出力ファイルが不存在。デフォルトで続行"
                 needs_architect=false
                 needs_decisions=false
             fi
         fi
 
-        log_info "Triage 結果: needs_architect=${needs_architect}, needs_decisions=${needs_decisions}"
+        dispatcher_log "Issue #${issue_number}: Triage 結果 needs_architect=${needs_architect}, needs_decisions=${needs_decisions}"
 
         # needs-decisions 自動続行（classification=safe かつ第一推奨ありの場合、
         # PM の第一推奨で自動続行。成功時は本ループを skip し、
@@ -613,30 +653,30 @@ _dispatcher_run() {
             output_file="${LOG_DIR}/qwen-output-${issue_number}.json"
             if declare -f nda_evaluate_auto_continue &>/dev/null; then
                 if nda_evaluate_auto_continue "${output_file}"; then
-                    log_info "needs-decisions 自動続行: Issue #${issue_number} は自動続行済み（次サイクルで再 pickup 待ち）"
+                    dispatcher_log "Issue #${issue_number}: needs-decisions 自動続行済み（次サイクルで再 pickup 待ち）"
                     rs_set_result "hold"
                     continue
                 else
-                    log_info "needs-decisions 自動続行: skip（従来経路へ）"
+                    dispatcher_log "Issue #${issue_number}: needs-decisions 自動続行 skip（従来経路へ）"
                 fi
             fi
         fi
 
         # Architect が必要か判定
         if [[ "${needs_architect}" == "true" ]]; then
-            log_info "Architect を起動..."
+            dispatcher_log "Issue #${issue_number}: Architect パスへ"
 
             # PM 起動（requirements.md 作成）
-            log_info "PM を起動（requirements.md 作成）..."
+            dispatcher_log "Issue #${issue_number}: PM を起動（requirements.md 作成）"
 
             # Architect 起動（design.md + tasks.md 作成）
-            log_info "Architect を起動（design.md + tasks.md 作成）..."
+            dispatcher_log "Issue #${issue_number}: Architect を起動（design.md + tasks.md 作成）"
 
             # PjM: design-review PR 作成
-            log_info "PjM: design-review PR 作成..."
+            dispatcher_log "Issue #${issue_number}: PjM が design-review PR 作成"
 
             # 人間レビュー待ち（ラベル付与）
-            log_info "設計 PR を作成し、人間レビュー待ちに設定"
+            dispatcher_log "Issue #${issue_number}: 設計 PR 作成、人間レビュー待ち"
             update_issue_labels "${issue_number}" "${LABEL_AWAITING_DESIGN}"
             release_issue "${issue_number}"
             rs_set_result "hold"
@@ -644,16 +684,16 @@ _dispatcher_run() {
         fi
 
         # Developer 直起動（design-less）
-        log_info "Developer を起動（design-less）..."
+        dispatcher_log "Issue #${issue_number}: Developer 直起動（design-less）"
         rs_record_stage "A'"
 
         developer_prompt=$(build_developer_prompt "${issue_number}" "${issue_title}" "${issue_url}")
 
         if [[ "${DRY_RUN}" == "true" ]]; then
-            log_info "[DRY-RUN] Qwen Code を実行: Developer"
+            dispatcher_log "[DRY-RUN] Qwen Code を実行: Developer"
         else
             if ! run_qwen_headless "${developer_prompt}" "${issue_number}"; then
-                log_error "Developer に失敗。Issue #${issue_number} を ${LABEL_FAILED} に設定"
+                dispatcher_error "Developer に失敗。Issue #${issue_number} を ${LABEL_FAILED} に設定"
                 update_issue_labels "${issue_number}" "${LABEL_FAILED}"
                 release_issue "${issue_number}"
                 rs_set_result "failed"
@@ -662,23 +702,23 @@ _dispatcher_run() {
         fi
 
         # Reviewer 起動
-        log_info "Reviewer を起動..."
+        dispatcher_log "Issue #${issue_number}: Reviewer を起動"
         rs_record_stage "B"
 
         if [[ "${DRY_RUN}" == "true" ]]; then
-            log_info "[DRY-RUN] Reviewer を実行"
+            dispatcher_log "[DRY-RUN] Reviewer を実行"
         else
             # Reviewer 実行後、approve なら PjM が impl PR 作成
-            log_info "Reviewer: approve → PjM が impl PR 作成"
+            dispatcher_log "Issue #${issue_number}: Reviewer → PjM が impl PR 作成"
         fi
 
         # PjM: impl PR 作成
-        log_info "PjM: impl PR 作成..."
+        dispatcher_log "Issue #${issue_number}: PjM が impl PR 作成"
         rs_record_stage "C"
 
         # ラベル更新
         if [[ "${DRY_RUN}" == "true" ]]; then
-            log_info "[DRY-RUN] Issue #${issue_number} のラベルを更新: codex-ready-for-review"
+            dispatcher_log "[DRY-RUN] Issue #${issue_number} のラベルを更新: codex-ready-for-review"
         else
             update_issue_labels "${issue_number}" "${LABEL_READY_FOR_REVIEW}"
             release_issue "${issue_number}"
@@ -686,14 +726,14 @@ _dispatcher_run() {
 
         rs_set_result "ready"
 
-        log_section "Issue #${issue_number} の処理が完了しました"
+        dispatcher_log "=== Issue #${issue_number} の処理が完了 ==="
     done
 
     # run-summary: degraded log スキャン
     rs_scan_degraded_log "${LOG_DIR}/idd-qwen-issue-watcher.log"
 
-    log_section "=== Dispatcher を終了 ==="
-    log_info "全 Issue の処理が完了しました"
+    dispatcher_log "=== Dispatcher を終了 ==="
+    dispatcher_log "全 Issue の処理が完了しました"
 }
 
 # ─── メイン ──────────────────────────────────────────────────────────────────
