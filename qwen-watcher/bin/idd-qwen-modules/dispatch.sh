@@ -489,5 +489,5 @@ EOF
 # ─── モジュール初期化 ───────────────────────────────────────────────────────
 
 dispatch_init() {
-    log_debug "dispatch.sh をロードしました"
+    dispatcher_log "dispatch.sh をロードしました"
 }

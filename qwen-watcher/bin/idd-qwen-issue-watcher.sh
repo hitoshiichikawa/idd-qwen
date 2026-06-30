@@ -154,7 +154,7 @@ full_auto_enabled() {
 
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary" "context-map" "scaffolding-health" "stale-pickup-reaper")
+REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary" "context-map" "scaffolding-health" "stale-pickup-reaper" "dispatch")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
@@ -657,74 +657,30 @@ _dispatcher_run() {
                     rs_set_result "hold"
                     continue
                 else
-                    dispatcher_log "Issue #${issue_number}: needs-decisions 自動続行 skip（従来経路へ）"
+                    dispatcher_log "Issue #${issue_number}: needs-decisions 自動続行 skip（dispatch_run へ）"
                 fi
             fi
         fi
 
-        # Architect が必要か判定
-        if [[ "${needs_architect}" == "true" ]]; then
-            dispatcher_log "Issue #${issue_number}: Architect パスへ"
-
-            # PM 起動（requirements.md 作成）
-            dispatcher_log "Issue #${issue_number}: PM を起動（requirements.md 作成）"
-
-            # Architect 起動（design.md + tasks.md 作成）
-            dispatcher_log "Issue #${issue_number}: Architect を起動（design.md + tasks.md 作成）"
-
-            # PjM: design-review PR 作成
-            dispatcher_log "Issue #${issue_number}: PjM が design-review PR 作成"
-
-            # 人間レビュー待ち（ラベル付与）
-            dispatcher_log "Issue #${issue_number}: 設計 PR 作成、人間レビュー待ち"
-            update_issue_labels "${issue_number}" "${LABEL_AWAITING_DESIGN}"
-            release_issue "${issue_number}"
-            rs_set_result "hold"
-            continue
-        fi
-
-        # Developer 直起動（design-less）
-        dispatcher_log "Issue #${issue_number}: Developer 直起動（design-less）"
-        rs_record_stage "A'"
-
-        developer_prompt=$(build_developer_prompt "${issue_number}" "${issue_title}" "${issue_url}")
-
+        # dispatch.sh: Triage 結果に基づき Issue を振り分け
+        dispatcher_log "Issue #${issue_number}: dispatch_run を実行"
         if [[ "${DRY_RUN}" == "true" ]]; then
-            dispatcher_log "[DRY-RUN] Qwen Code を実行: Developer"
+            dispatcher_log "[DRY-RUN] dispatch_run を実行: needs_architect=${needs_architect}"
+            if [[ "${needs_architect}" == "true" ]]; then
+                rs_set_result "hold"
+            else
+                rs_set_result "ready"
+            fi
         else
-            if ! run_qwen_headless "${developer_prompt}" "${issue_number}"; then
-                dispatcher_error "Developer に失敗。Issue #${issue_number} を ${LABEL_FAILED} に設定"
+            if ! dispatch_run "${issue_number}" "${issue_title}" "${output_file}"; then
+                dispatcher_error "dispatch_run 失敗: Issue #${issue_number}"
                 update_issue_labels "${issue_number}" "${LABEL_FAILED}"
                 release_issue "${issue_number}"
                 rs_set_result "failed"
                 continue
             fi
+            # dispatch_run 内部でラベル更新・release 済み。rs_result は各パス内で設定済み
         fi
-
-        # Reviewer 起動
-        dispatcher_log "Issue #${issue_number}: Reviewer を起動"
-        rs_record_stage "B"
-
-        if [[ "${DRY_RUN}" == "true" ]]; then
-            dispatcher_log "[DRY-RUN] Reviewer を実行"
-        else
-            # Reviewer 実行後、approve なら PjM が impl PR 作成
-            dispatcher_log "Issue #${issue_number}: Reviewer → PjM が impl PR 作成"
-        fi
-
-        # PjM: impl PR 作成
-        dispatcher_log "Issue #${issue_number}: PjM が impl PR 作成"
-        rs_record_stage "C"
-
-        # ラベル更新
-        if [[ "${DRY_RUN}" == "true" ]]; then
-            dispatcher_log "[DRY-RUN] Issue #${issue_number} のラベルを更新: codex-ready-for-review"
-        else
-            update_issue_labels "${issue_number}" "${LABEL_READY_FOR_REVIEW}"
-            release_issue "${issue_number}"
-        fi
-
-        rs_set_result "ready"
 
         dispatcher_log "=== Issue #${issue_number} の処理が完了 ==="
     done
