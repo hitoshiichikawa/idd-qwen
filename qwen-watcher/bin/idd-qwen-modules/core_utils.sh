@@ -14,6 +14,33 @@
 # 既に source されていれば何もしない
 _is_core_utils_loaded() { return 0; }
 
+# ─── Feature Flag: Stage Checkpoint ─────────────────────────────────────────
+#
+# Stage Checkpoint Resume（#68, 既定有効 / #112）: `STAGE_CHECKPOINT_ENABLED=true`
+# （既定）で impl / impl-resume の Stage A/B/C 失敗時に checkpoint からの
+# resume を試行する。`=false` 明示時は本機能を無効化（既存挙動と同一）。
+#
+# 判定: 値が `true` のみ有効。`True` / `TRUE` / `1` / `yes` 等は **無効** として扱う。
+# 未設定（unset）時は既定の `true` として動作。
+# shellcheck disable=SC2034
+STAGE_CHECKPOINT_ENABLED="${STAGE_CHECKPOINT_ENABLED:-true}"
+
+# ─── Feature Flag: Tasks Count Gate ─────────────────────────────────────────
+#
+# tasks.md 件数制限（#131）: `TC_ENABLED=true`（既定）で Architect 生成の
+# `tasks.md` 最上位タスク件数を gate し、閾値超過時に `codex-needs-decisions`
+# ラベルを付与する。`=false` 明示時は件数制限をスキップ。
+# shellcheck disable=SC2034
+TC_ENABLED="${TC_ENABLED:-true}"
+
+# ─── Feature Flag: Slot Lock Manager ────────────────────────────────────────
+#
+# Slot Lock Manager（#83）: `SLOT_ENABLED=true`（既定）で per-slot concurrency
+# control（flock 排他）を有効化する。`=false` 明示時は flock を使わず、
+# 同一 issue を複数 slot が同時に処理する可能性がある（安全側）。
+# shellcheck disable=SC2034
+SLOT_ENABLED="${SLOT_ENABLED:-true}"
+
 # ─── ANSI カラー定数 ────────────────────────────────────────────────────────
 # NO_COLOR (https://no-color.org/) が設定されていれば色コードを出力しない。
 # shellcheck disable=SC2034
@@ -1253,6 +1280,107 @@ _worktree_inject_codex() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Phase B: Stage Checkpoint
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Stage Checkpoint 専用ロガー（既存 mq_log / pi_log / rv_log と同形式）。
+# `stage-checkpoint:` prefix で grep 抽出可能（NFR 2.2）。warn / error は stderr へ。
+# Req 1.2
+sc_log() {
+  echo "[$(date '+%F %T')] stage-checkpoint: $*"
+}
+sc_warn() {
+  echo "[$(date '+%F %T')] stage-checkpoint: WARN: $*" >&2
+}
+sc_error() {
+  echo "[$(date '+%F %T')] stage-checkpoint: ERROR: $*" >&2
+}
+
+# ─── stage_checkpoint_has_impl_notes ───
+#
+# Stage A 完了 checkpoint（impl-notes.md）の **当該 Issue branch HEAD 上での tracked**
+# を判定する。working tree のみに存在し未 commit のファイルは不採用とする
+# （Req 4.1, 4.2, 4.4 / 部分実行を許さない、Req 5.1）。
+#
+# 入力: 環境変数 REPO_DIR / SPEC_DIR_REL（呼び出し元 _slot_run_issue が設定済み）
+# 戻り値: 0 = checkpoint 採用 / 1 = 不採用（不在 or untracked）
+# 副作用: なし
+stage_checkpoint_has_impl_notes() {
+  local rel="$SPEC_DIR_REL/impl-notes.md"
+  local path="$REPO_DIR/$rel"
+  [ -f "$path" ] || return 1
+  local out
+  out=$(git -C "$REPO_DIR" ls-tree --name-only HEAD -- "$rel" 2>/dev/null || true)
+  [ -n "$out" ]
+}
+
+# ─── stage_checkpoint_has_review_notes ───
+#
+# Stage B 完了 checkpoint（review-notes.md）の **当該 Issue branch HEAD 上での tracked**
+# を判定する。working tree のみに存在し未 commit のファイルは不採用とする
+# （Req 1.1, 1.2 / 部分実行を許さない、Req 5.1）。
+#
+# 入力: 環境変数 REPO_DIR / SPEC_DIR_REL（呼び出し元 _slot_run_issue が設定済み）
+# 戻り値: 0 = checkpoint 採用 / 1 = 不採用（不在 or untracked）
+# 副作用: なし
+stage_checkpoint_has_review_notes() {
+  local rel="$SPEC_DIR_REL/review-notes.md"
+  local path="$REPO_DIR/$rel"
+  [ -f "$path" ] || return 1
+  local out
+  out=$(git -C "$REPO_DIR" ls-tree --name-only HEAD -- "$rel" 2>/dev/null || true)
+  [ -n "$out" ]
+}
+
+# ─── sc_issue_state ───
+#
+# 対象 Issue (`$NUMBER`) の state を 1 トークン (`OPEN` / `CLOSED`) で stdout に返す
+# read-only ヘルパ。`stage_checkpoint_find_impl_pr` が MERGED PR を terminal として
+# 採用する前に、Issue が reopen されていないかを確認するために使う
+# （Issue #273 / Req 2.3, 3.1, 4.3）。
+#
+# 入力: 環境変数 NUMBER / REPO（呼び出し元 _slot_run_issue が設定済み）
+# 戻り値: 0 = 取得成功（stdout = "OPEN" / "CLOSED"）/ 1 = API 失敗（stdout 空）
+# 副作用: なし（read-only）
+sc_issue_state() {
+  local state
+  state=$(gh issue view "$NUMBER" --repo "$REPO" --json state --jq '.state' 2>/dev/null || true)
+  case "$state" in
+    OPEN|CLOSED) echo "$state"; return 0 ;;
+    *)           return 1 ;;
+  esac
+}
+
+# ─── sc_tasks_unchecked_count ───
+#
+# `tasks.md` の **最上位 numeric ID 未チェックタスク** 件数を整数で stdout に返す
+# read-only ヘルパ。`stage_checkpoint_find_impl_pr` が MERGED PR を terminal として
+# 採用する前に、tasks.md に未着手タスクが残存していないかを確認するために使う
+# （Issue #273 / Req 2.1, 2.4, 3.2, 3.3）。
+#
+# 入力: 環境変数 REPO_DIR / SPEC_DIR_REL（呼び出し元 _slot_run_issue が設定済み）
+# 戻り値:
+#   0 = 取得成功（stdout = 件数）
+#   1 = I/O 失敗（読み取り権限なし等、stdout = 0、safe fallback）
+#   2 = ファイル不在（design-less impl 等価扱い、stdout = 0）
+# 副作用: なし（read-only）
+#
+# 判定 regex 正本: `.qwen/rules/tasks-generation.md` の「Checkbox 形式の必須化」節および
+# `.qwen/rules/design-review-gate.md` の Budget overflow count 抽出 regex
+# (`^- \[ \]\*? [0-9]+\. `) と **完全一致**。両者は別実行基盤のため共有コードを持てず、
+# 同一 regex を明記してドリフトを防ぐ。
+sc_tasks_unchecked_count() {
+  local rel="$SPEC_DIR_REL/tasks.md"
+  local path="$REPO_DIR/$rel"
+  [ -f "$path" ] || { echo 0; return 2; }
+  [ -r "$path" ] || { echo 0; return 1; }
+  local count
+  count=$(grep -cE '^- \[ \]\*? [0-9]+\. ' "$path" 2>/dev/null) || count=0
+  echo "$count"
+  return 0
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Phase C: Slot Lock Manager
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1292,6 +1420,50 @@ _slot_release() {
   eval "exec ${fd}>&-" 2>/dev/null || true
   return 0
 }
+
+# ─── Slot 存在判定 ──────────────────────────────────────────────────────────
+#
+# 指定 slot の lock file が存在し、まだロック中か（= 他プロセスが処理中）を判定する。
+# 引数: $1 = slot 番号
+# 戻り値: 0 = lock file 存在かつロック中 / 1 = 存在しない / 存在するがロック解放済み
+# 副作用: なし（read-only）
+slot_exists() {
+  local n="$1"
+  local lock_file
+  lock_file="$(_slot_lock_path "$n")"
+  [ -f "$lock_file" ] || return 1
+  # flock -n が 0 を返す = 既にロック取得済み（他プロセスが保持中）
+  if flock -n "$lock_file" 2>/dev/null; then
+    return 1
+  else
+    return 0
+  fi
+}
+
+# ─── SLOT_MAX / SLOT_TIMEOUT / CPU 数検出 ───────────────────────────────────
+#
+# Slot Lock Manager の設定値。既定値は idd-codex と同一。
+# 運用者は env var で上書き可能。
+
+# 最大 slot 数。既定 3（3 並列）。超過分は queue 待ち。
+# shellcheck disable=SC2034
+SLOT_MAX="${SLOT_MAX:-3}"
+
+# slot 取得試行時の待機間隔（秒）。既定 2。
+# shellcheck disable=SC2034
+SLOT_TIMEOUT="${SLOT_TIMEOUT:-2}"
+
+# 利用可能な CPU 数（並列実装の上限推定用）。macOS / Linux 両対応。
+# shellcheck disable=SC2034
+CPU_COUNT="$(
+  if command -v nproc >/dev/null 2>&1; then
+    nproc
+  elif command -v sysctl >/dev/null 2>&1; then
+    sysctl -n hw.ncpu 2>/dev/null || echo 1
+  else
+    echo 1
+  fi
+)"
 
 # ─── SLOT_INIT_HOOK 起動 wrapper ────────────────────────────────────────────
 
