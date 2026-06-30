@@ -36,7 +36,7 @@
   - _Boundary: label defs, update_issue_labels, mark_*, handle_*, detect_*
   - _Depends: 1
 
-- [ ] 4. Dispatcher Full Implementation
+- [x] 4. Dispatcher Full Implementation
   - `_dispatcher_run()` を stub から full 実装へ書き換え
   - `claim_issue()` / `release_issue()` / `list_auto_dev_issues()` を追加
   - `FULL_AUTO_ENABLED` / `STALE_PICKUP_REAPER_ENABLED` flag guard を追加
