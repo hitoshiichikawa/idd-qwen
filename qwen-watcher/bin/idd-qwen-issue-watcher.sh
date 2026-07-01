@@ -305,7 +305,7 @@ full_auto_enabled() {
 
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary" "context-map" "scaffolding-health" "stale-pickup-reaper" "dispatch")
+REQUIRED_MODULES=("core_utils" "env-loader" "triage" "dispatch" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary" "context-map" "scaffolding-health" "stale-pickup-reaper" "failed-recovery" "stage-a-verify" "slack-notify" "auto-rebase" "codex-guard" "merge-queue" "pr-iteration" "promote-pipeline" "quota-aware")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
@@ -696,77 +696,6 @@ qa_run_codex_stage() {
 
     codex_exec_prompt "${stage}" "${issue_number}" "${prompt}" "${output_file}"
     return $?
-}
-
-# ─── partial status 検出 ────────────────────────────────────────────────────
-# handle_partial_status() - impl-notes.md の STATUS 行を検出し、
-# partial_blocked / partial_overrun を検出したら codex-needs-decisions ラベルを付与。
-#
-# 引数:
-#   $1 = repo
-#   $2 = issue_number
-#   $3 = spec_dir（例: docs/specs/14-foo）
-# 戻り値: 0 (status 行なし / complete), 1 (partial / needs-decisions)
-handle_partial_status() {
-    local repo="$1"
-    local issue_number="$2"
-    local spec_dir="$3"
-
-    local impl_notes
-    impl_notes=$(find "${spec_dir}" -maxdepth 1 -name "impl-notes.md" -type f 2>/dev/null | head -1)
-
-    if [[ -z "${impl_notes}" ]] || [[ ! -f "${impl_notes}" ]]; then
-        return 0
-    fi
-
-    # STATUS 行を検出（行頭固定: ^STATUS: (.+)$）
-    local status_line
-    status_line=$(grep -E '^STATUS: ' "${impl_notes}" 2>/dev/null | head -1 || true)
-
-    if [[ -z "${status_line}" ]]; then
-        return 0
-    fi
-
-    local status_value
-    status_value=$(echo "${status_line}" | sed -E 's/^STATUS: (.+)$/\1/')
-
-    case "${status_value}" in
-        complete)
-            log_info "impl-notes.md: STATUS=complete（通常経路継続）"
-            return 0
-            ;;
-        partial_blocked|partial_overrun)
-            log_warn "impl-notes.md: STATUS=${status_value} 検出 → codex-needs-decisions エスカレーション"
-
-            # 詳細をログに記録
-            local partial_reason
-            partial_reason=$(grep -A 5 '## Partial Halt Reason' "${impl_notes}" 2>/dev/null | tail -5 || echo "未記載")
-            log_warn "  理由: ${partial_reason}"
-
-            # Pending tasks を記録
-            local pending_tasks
-            pending_tasks=$(grep -A 20 '## Pending Tasks' "${impl_notes}" 2>/dev/null | tail -15 || echo "未記載")
-            log_warn "  未完了タスク: ${pending_tasks}"
-
-            # codex-needs-decisions ラベルを付与
-            if [[ "${DRY_RUN}" != "true" ]]; then
-                gh issue edit --repo "${repo}" "${issue_number}" \
-                    --add-label "${LABEL_NEEDS_DECISIONS}" 2>/dev/null || {
-                    log_error "codex-needs-decisions ラベル付与失敗: Issue #${issue_number}"
-                    return 1
-                }
-                log_info "Issue #${issue_number} に codex-needs-decisions ラベルを付与"
-            else
-                log_info "[DRY-RUN] Issue #${issue_number} に codex-needs-decisions ラベルを付与"
-            fi
-
-            return 1
-            ;;
-        *)
-            log_warn "impl-notes.md: 不明な STATUS 値 '${status_value}'（無視）"
-            return 0
-            ;;
-    esac
 }
 
 # ─── 実装パイプライン ──────────────────────────────────────────────────────

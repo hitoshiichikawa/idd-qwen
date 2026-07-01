@@ -775,32 +775,98 @@ mark_issue_needs_decisions() {
     add_issue_label "${repo}" "${issue_number}" "${_QW_LABEL_NEEDS_DECISIONS}"
 }
 
-# ─── handle_partial_status: partial 検出時のラベル操作 ───────────────────────
+# ─── handle_partial_status: STATUS 行検出 + ラベル操作 ────────────────────────
 # impl-notes.md の STATUS 行から partial_blocked / partial_overrun を検出し、
 # 対応するラベル操作を実行する。
-# Args: $1=repo $2=issue_number $3=impl_notes_path
+# Args: $1=repo $2=issue_number $3=spec_dir（impl-notes.md を探索）
 # Returns: 0=no partial / 1=partial_blocked / 2=partial_overrun / 3=error
 handle_partial_status() {
     local repo="$1"
     local issue_number="$2"
-    local impl_notes_path="$3"
+    local spec_dir="$3"
 
-    if [[ ! -f "${impl_notes_path}" ]]; then
+    local impl_notes
+    impl_notes=$(find "${spec_dir}" -maxdepth 1 -name "impl-notes.md" -type f 2>/dev/null | head -1)
+
+    if [[ -z "${impl_notes}" ]] || [[ ! -f "${impl_notes}" ]]; then
         return 0
     fi
 
-    local status
-    status="$(grep -E '^STATUS: ' "${impl_notes_path}" 2>/dev/null | tail -1)" || true
+    # STATUS 行を検出（行頭固定: ^STATUS: (.+)$）
+    local status_line
+    status_line=$(grep -E '^STATUS: ' "${impl_notes}" 2>/dev/null | head -1 || true)
 
-    if [[ "${status}" == *"partial_blocked"* ]]; then
-        mark_issue_needs_decisions "${repo}" "${issue_number}"
-        return 1
-    elif [[ "${status}" == *"partial_overrun"* ]]; then
-        mark_issue_needs_decisions "${repo}" "${issue_number}"
-        return 2
+    if [[ -z "${status_line}" ]]; then
+        return 0
     fi
 
-    return 0
+    local status_value
+    status_value=$(echo "${status_line}" | sed -E 's/^STATUS: (.+)$/\1/')
+
+    case "${status_value}" in
+        complete)
+            log_info "impl-notes.md: STATUS=complete（通常経路継続）"
+            return 0
+            ;;
+        partial_blocked)
+            log_warn "impl-notes.md: STATUS=${status_value} 検出 → codex-needs-decisions エスカレーション"
+
+            # 詳細をログに記録
+            local partial_reason
+            partial_reason=$(grep -A 5 '## Partial Halt Reason' "${impl_notes}" 2>/dev/null | tail -5 || echo "未記載")
+            log_warn "  理由: ${partial_reason}"
+
+            # Pending tasks を記録
+            local pending_tasks
+            pending_tasks=$(grep -A 20 '## Pending Tasks' "${impl_notes}" 2>/dev/null | tail -15 || echo "未記載")
+            log_warn "  未完了タスク: ${pending_tasks}"
+
+            # codex-needs-decisions ラベルを付与
+            if [[ "${DRY_RUN}" != "true" ]]; then
+                gh issue edit --repo "${repo}" "${issue_number}" \
+                    --add-label "${LABEL_NEEDS_DECISIONS}" 2>/dev/null || {
+                    log_error "codex-needs-decisions ラベル付与失敗: Issue #${issue_number}"
+                    return 3
+                }
+                log_info "Issue #${issue_number} に codex-needs-decisions ラベルを付与"
+            else
+                log_info "[DRY-RUN] Issue #${issue_number} に codex-needs-decisions ラベルを付与"
+            fi
+
+            return 1
+            ;;
+        partial_overrun)
+            log_warn "impl-notes.md: STATUS=${status_value} 検出 → codex-needs-decisions エスカレーション"
+
+            # 詳細をログに記録
+            local partial_reason
+            partial_reason=$(grep -A 5 '## Partial Halt Reason' "${impl_notes}" 2>/dev/null | tail -5 || echo "未記載")
+            log_warn "  理由: ${partial_reason}"
+
+            # Pending tasks を記録
+            local pending_tasks
+            pending_tasks=$(grep -A 20 '## Pending Tasks' "${impl_notes}" 2>/dev/null | tail -15 || echo "未記載")
+            log_warn "  未完了タスク: ${pending_tasks}"
+
+            # codex-needs-decisions ラベルを付与
+            if [[ "${DRY_RUN}" != "true" ]]; then
+                gh issue edit --repo "${repo}" "${issue_number}" \
+                    --add-label "${LABEL_NEEDS_DECISIONS}" 2>/dev/null || {
+                    log_error "codex-needs-decisions ラベル付与失敗: Issue #${issue_number}"
+                    return 3
+                }
+                log_info "Issue #${issue_number} に codex-needs-decisions ラベルを付与"
+            else
+                log_info "[DRY-RUN] Issue #${issue_number} に codex-needs-decisions ラベルを付与"
+            fi
+
+            return 2
+            ;;
+        *)
+            log_warn "impl-notes.md: 不明な STATUS 値 '${status_value}'（無視）"
+            return 0
+            ;;
+    esac
 }
 
 # ─── detect_blocked_marker: BLOCKED: 行の検出 ────────────────────────────────
