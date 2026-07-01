@@ -69,6 +69,13 @@ QWEN_MAX_WALL_TIME="${QWEN_MAX_WALL_TIME:-900}"
 # 並列処理スロット数
 PARALLEL_SLOTS="${PARALLEL_SLOTS:-3}"
 
+# base ブランチ（git 操作の基準ブランチ。core_utils.sh / pr-reviewer.sh /
+# scaffolding-health.sh / context-map.sh で参照される）
+BASE_BRANCH="${BASE_BRANCH:-main}"
+
+# worktree 格納ディレクトリ（core_utils.sh の per-slot worktree 配置先）
+WORKTREE_BASE_DIR="${WORKTREE_BASE_DIR:-${HOME}/.idd-qwen/worktrees}"
+
 # 失敗回復（二重 opt-in: FULL_AUTO_ENABLED AND FAILED_RECOVERY_ENABLED）
 FULL_AUTO_ENABLED="${FULL_AUTO_ENABLED:-false}"
 case "$FULL_AUTO_ENABLED" in
@@ -123,6 +130,18 @@ CONTEXT_INDEXER_ENABLED="${CONTEXT_INDEXER_ENABLED:-false}"
 # Indexer 最大 turn 数（既定 10）。Indexer の runaway を抑止する上限。
 CONTEXT_INDEXER_MAX_TURNS="${CONTEXT_INDEXER_MAX_TURNS:-10}"
 
+# ─── Stale Pickup Reaper Config ──────────────────────────────────────────────
+# stale-pickup-reaper.sh モジュールが参照する変数群。
+# 3-observation AND 判定（marker 経時 / slot lock / session alive）の全設定。
+STALE_PICKUP_REAPER_ENABLED="${STALE_PICKUP_REAPER_ENABLED:-false}"
+STALE_PICKUP_REAPER_STATE_DIR="${STALE_PICKUP_REAPER_STATE_DIR:-${LOG_DIR}/reaper}"
+STALE_PICKUP_REAPER_THRESHOLD_MINUTES="${STALE_PICKUP_REAPER_THRESHOLD_MINUTES:-120}"
+STALE_PICKUP_REAPER_GH_TIMEOUT="${STALE_PICKUP_REAPER_GH_TIMEOUT:-30}"
+STALE_PICKUP_REAPER_MAX_ISSUES="${STALE_PICKUP_REAPER_MAX_ISSUES:-5}"
+
+# Slot lock 用ディレクトリ（stale-pickup-reaper が slot 状態を参照するために必要）。
+SLOT_LOCK_DIR="${SLOT_LOCK_DIR:-${LOCK_FILE}.slots}"
+
 # ─── Full-auto Kill Switch (#97) ──────────────────────────────────────────────
 # full-auto 系 processor（auto-merge 等）の共通 gate。
 # `FULL_AUTO_ENABLED=true` 厳密一致でのみ全 full-auto が有効になる。
@@ -135,7 +154,7 @@ full_auto_enabled() {
 
 # モジュール読み込み
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/idd-qwen-modules" && pwd)"
-REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary" "context-map" "scaffolding-health")
+REQUIRED_MODULES=("core_utils" "env-loader" "needs-decisions-auto" "pr-reviewer" "auto-merge" "auto-merge-design" "run-summary" "context-map" "scaffolding-health" "stale-pickup-reaper")
 for mod in "${REQUIRED_MODULES[@]}"; do
     mod_file="${MODULE_DIR}/${mod}.sh"
     if [[ -f "${mod_file}" ]]; then
@@ -513,6 +532,11 @@ _dispatcher_run() {
     # 失敗回復処理（二重 gate: FULL_AUTO_ENABLED AND FAILED_RECOVERY_ENABLED）
     if declare -f process_failed_recovery &>/dev/null; then
         process_failed_recovery || fr_warn "process_failed_recovery が想定外のエラーで終了（後続 Issue 処理は継続）"
+    fi
+
+    # 未 pickup 復帰処理（STALE_PICKUP_REAPER_ENABLED=true のみ）
+    if declare -f process_stale_pickup_reaper &>/dev/null; then
+        process_stale_pickup_reaper || sr_warn "process_stale_pickup_reaper が想定外のエラーで終了（後続 Issue 処理は継続）"
     fi
 
     # Issue ごとに処理
