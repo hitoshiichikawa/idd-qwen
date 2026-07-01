@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Core utilities + Stage Checkpoint + Slot Management
+- [x] 1. Core utilities + Stage Checkpoint + Slot Management
   - `core_utils.sh` module から log/warn/error/date 関数をポート（_log, _warn, _error）
   - `_env_get()` / `_env_set()` 等の env helper をポート
   - `sc_log()`, `sc_warn()`, `sc_error()` を追加（stage-checkpoint: prefix）
@@ -13,7 +13,7 @@
   - _Requirements: 1.3, 2.1, 2.2, 2.3, 2.4, 2.5, 12.1, 12.2, 12.3, 12.4, 12.5
   - _Boundary: core_utils, sc_*, slot_*
 
-- [ ] 2. Tasks Count Gate + Spec Artifacts Guard
+- [x] 2. Tasks Count Gate + Spec Artifacts Guard
   - `tc_count_tasks()` を追加（regex: `^- \[ \]\*? [0-9]+\.[[:space:]]`）
   - `tc_validate()` を追加（≤10 pass, 11-13 consolidation, ≥14 escalate）
   - `TC_ENABLED=false` guard を追加
@@ -24,7 +24,7 @@
   - _Boundary: tc_*, _spec_*
   - _Depends: 1
 
-- [ ] 3. Label Operations + Mark/Handle/Detect Utilities
+- [x] 3. Label Operations + Mark/Handle/Detect Utilities
   - 全 17 ラベル定数を追加（既存 14 関数の label 定義を source に準拠）
   - `update_issue_labels()` を追加（add/remove 両対応）
   - `add_issue_label()` / `remove_issue_label()` を追加
